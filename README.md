@@ -61,6 +61,9 @@ Zusätzlich die Umgebungsvariable `ENABLE_FORWARD_USER_INFO_HEADERS=true` für O
 - Die **eingebaute Memory-Funktion** (Einstellungen → Personalisierung) ausgeschaltet lassen, sonst gibt es doppeltes Gedächtnis.
 - Unter **Admin → Einstellungen → Oberfläche** kann für Titel- und Tag-Generierung ein eigenes "Task-Modell" gewählt werden. Der Harness erkennt diese Anfragen aber auch selbst und reicht sie ohne Gedächtnis durch.
 - **Function Calling** im Modell kann auf "Default" bleiben. Die Gedächtnis-Tools laufen im Harness, nicht in Open WebUI.
+- **Reasoning-Modelle:** Manche Modelle lehnen auf `/v1/chat/completions` Tools zusammen mit `reasoning_effort` ab ("Function tools with reasoning_effort are not supported …"). Der Harness erkennt das und wiederholt die Anfrage automatisch. Was dabei wegfällt, legt `REASONING_TOOLS_CONFLICT` fest:
+  - `prefer_reasoning` (Standard): Es wird ohne Gedächtnis-Tools geantwortet. Das automatische Erinnern und Lernen funktioniert weiter, nur aktives Nachschlagen und "Merk dir" per Tool entfallen. "Merk dir" wird trotzdem im Hintergrund gelernt.
+  - `prefer_tools`: `reasoning_effort` wird auf `none` gesetzt, die Tools bleiben erhalten.
 
 ---
 

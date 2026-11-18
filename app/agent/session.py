@@ -110,6 +110,8 @@ class ChatSession:
         )
         self.tool_log: list[dict[str, Any]] = []
         self.messages: list[dict[str, Any]] = []
+        self.tools_disabled = False
+        self._conflict_handled = False
         self.completion_id = f"chatcmpl-{uuid.uuid4().hex}"
         self.created = int(time.time())
 
@@ -134,8 +136,61 @@ class ChatSession:
             mode_hint=mode_hint,
         )
         self.messages = [{"role": "system", "content": system}, *self.incoming]
+        if self.upstream_model in self.s.tool_reasoning_conflicts and "reasoning_effort" in self.params:
+            self._resolve_conflict()
+
+    # ------------------------------------------- Tools vs. reasoning_effort
+    @staticmethod
+    def _is_tool_reasoning_conflict(e: UpstreamError) -> bool:
+        msg = e.message.lower()
+        return "reasoning_effort" in msg and ("tool" in msg or "function" in msg)
+
+    def _resolve_conflict(self) -> None:
+        self._conflict_handled = True
+        if self.settings.reasoning_tools_conflict == "prefer_tools":
+            self.params["reasoning_effort"] = "none"
+            log.info("%s: reasoning_effort='none', damit Gedächtnis-Tools nutzbar sind", self.upstream_model)
+            return
+        self.tools_disabled = True
+        self.messages[0] = {
+            **self.messages[0],
+            "content": self.messages[0]["content"]
+            + "\n\n_Hinweis: In diesem Chat stehen dir keine Gedächtnis-Tools zur Verfügung. Nutze die oben "
+            "bereitgestellten Erinnerungen; neue Informationen werden nach der Antwort automatisch gespeichert._",
+        }
+        log.info("%s: Gedächtnis-Tools deaktiviert (Modell erlaubt keine Tools mit reasoning_effort)", self.upstream_model)
+
+    def _try_recover(self, e: UpstreamError) -> bool:
+        """True, wenn der Fehler der bekannte Tools/Reasoning-Konflikt war und angepasst wurde."""
+        if self._conflict_handled or not self._is_tool_reasoning_conflict(e):
+            return False
+        self.s.tool_reasoning_conflicts.add(self.upstream_model)
+        self._resolve_conflict()
+        return True
+
+    async def _upstream_stream(self, allow_internal: bool) -> AsyncIterator[dict[str, Any]]:
+        while True:
+            started = False
+            try:
+                async for chunk in self.s.llm.chat_stream(self._payload(allow_internal)):
+                    started = True
+                    yield chunk
+                return
+            except UpstreamError as e:
+                if started or not self._try_recover(e):
+                    raise
+
+    async def _upstream_chat(self, allow_internal: bool) -> dict[str, Any]:
+        while True:
+            try:
+                return await self.s.llm.chat(self._payload(allow_internal))
+            except UpstreamError as e:
+                if not self._try_recover(e):
+                    raise
 
     def _tools(self, allow_internal: bool) -> list[dict[str, Any]]:
+        if self.tools_disabled:
+            return []
         tools = list(self.client_tools)
         if allow_internal:
             tools = tool_definitions(self.read_only) + tools
@@ -146,6 +201,9 @@ class ChatSession:
         tools = self._tools(allow_internal_tools)
         if tools:
             payload["tools"] = tools
+        else:
+            payload.pop("tool_choice", None)
+            payload.pop("parallel_tool_calls", None)
         return payload
 
     async def _run_tools(self, calls: list[_ToolCall], content: str) -> list[str]:
@@ -199,7 +257,7 @@ class ChatSession:
                 acc = _ToolCallAccumulator()
                 finish_reason = None
                 iteration_text: list[str] = []
-                async for chunk in self.s.llm.chat_stream(self._payload(allow_internal)):
+                async for chunk in self._upstream_stream(allow_internal):
                     if chunk.get("usage"):
                         usage = chunk["usage"]
                     choices = chunk.get("choices") or []
@@ -273,7 +331,7 @@ class ChatSession:
         max_iter = self.settings.max_tool_iterations
         for iteration in range(max_iter + 1):
             allow_internal = iteration < max_iter
-            resp = await self.s.llm.chat(self._payload(allow_internal))
+            resp = await self._upstream_chat(allow_internal)
             msg = (resp.get("choices") or [{}])[0].get("message") or {}
             content = msg.get("content") or ""
             calls = [

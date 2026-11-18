@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # Agent
     max_tool_iterations: int = 6
     show_tool_activity: bool = True
+    # Manche Modelle erlauben auf /v1/chat/completions keine Tools zusammen mit
+    # reasoning_effort. Was soll dann wegfallen?
+    #   prefer_reasoning → Gedächtnis-Tools weglassen (automatisches Erinnern/Lernen läuft weiter)
+    #   prefer_tools     → reasoning_effort weglassen
+    reasoning_tools_conflict: str = "prefer_reasoning"
 
     # Hintergrund-Jobs
     enable_worker: bool = True

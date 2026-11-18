@@ -33,6 +33,8 @@ class Services:
         self.summarizer = ConversationSummarizer(self.store, self.llm, self.embedder, settings)
         self.exporter = VaultExporter(self.store, settings.export_dir)
         self.worker = Worker(self)
+        # Modelle, die Tools + reasoning_effort nicht zusammen akzeptieren (zur Laufzeit gelernt)
+        self.tool_reasoning_conflicts: set[str] = set()
 
     async def startup(self) -> None:
         self.store.ensure_self(self.settings.user_name)

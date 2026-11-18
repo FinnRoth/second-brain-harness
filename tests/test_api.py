@@ -172,3 +172,58 @@ async def test_memory_admin_endpoints(services, client):
     hits = (await client.get("/memory/search", params={"q": "Was ist mit dem Blog?"})).json()
     assert hits["detected_entities"][0]["name"] == "Blog"
     assert (await client.get("/memory/stats")).json()["facts"]["active"] == 1
+
+
+def _conflicting_upstream(fake_llm: FakeLLM, seen: list):
+    """Simuliert ein Modell, das Tools + reasoning_effort ablehnt."""
+    from app.llm import UpstreamError
+
+    orig_chat, orig_stream = fake_llm.chat, fake_llm.chat_stream
+    msg = ("Function tools with reasoning_effort are not supported for gpt-6.1 in /v1/chat/completions. "
+           "To use function tools, use /v1/responses or set reasoning_effort to 'none'.")
+
+    def check(payload):
+        seen.append(payload)
+        if payload.get("tools") and payload.get("reasoning_effort") not in (None, "none"):
+            raise UpstreamError(400, msg)
+
+    async def chat(payload):
+        check(payload)
+        return await orig_chat(payload)
+
+    async def chat_stream(payload):
+        check(payload)
+        async for c in orig_stream(payload):
+            yield c
+
+    fake_llm.chat, fake_llm.chat_stream = chat, chat_stream
+
+
+async def test_reasoning_tool_conflict_drops_tools(services, client, fake_llm: FakeLLM):
+    seen: list = []
+    _conflicting_upstream(fake_llm, seen)
+    fake_llm.handler = lambda p: {"content": "Antwort mit Reasoning"}
+    body = {"model": "brain/gpt-5", "stream": True, "reasoning_effort": "high",
+            "messages": [{"role": "user", "content": "hi"}]}
+    r = await client.post("/v1/chat/completions", json=body)
+    assert sse_content(r.text) == "Antwort mit Reasoning"
+    assert len(seen) == 2 and "tools" not in seen[1] and seen[1]["reasoning_effort"] == "high"
+    assert "keine Gedächtnis-Tools" in seen[1]["messages"][0]["content"]
+    assert services.store.list_conversations()  # Turn wurde trotzdem gespeichert
+
+    # Zweite Anfrage: Konflikt ist bekannt → kein fehlschlagender Versuch mehr
+    seen.clear()
+    r = await client.post("/v1/chat/completions", json={**body, "stream": False})
+    assert r.json()["choices"][0]["message"]["content"] == "Antwort mit Reasoning"
+    assert len(seen) == 1 and "tools" not in seen[0]
+
+
+async def test_reasoning_tool_conflict_prefer_tools(services, client, fake_llm: FakeLLM):
+    services.settings.reasoning_tools_conflict = "prefer_tools"
+    seen: list = []
+    _conflicting_upstream(fake_llm, seen)
+    fake_llm.handler = lambda p: {"content": "ok"}
+    r = await client.post("/v1/chat/completions", json={
+        "model": "brain/gpt-5", "reasoning_effort": "medium", "messages": [{"role": "user", "content": "hi"}]})
+    assert r.json()["choices"][0]["message"]["content"] == "ok"
+    assert seen[-1]["tools"] and seen[-1]["reasoning_effort"] == "none"
