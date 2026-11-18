@@ -1,0 +1,332 @@
+"""Eine Chat-Anfrage: Kontext anreichern → Agent-Loop mit Tools → speichern."""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, AsyncIterator
+from zoneinfo import ZoneInfo
+
+from .. import prompts
+from ..llm import UpstreamError
+from ..memory.extraction import today_str
+from ..memory.retrieval import text_of
+from ..openwebui import activity_block, conversation_id, strip_activity
+from .tools import ToolExecutor, describe_call, tool_definitions
+
+if TYPE_CHECKING:
+    from ..services import Services
+
+log = logging.getLogger(__name__)
+
+MODES = ("brain", "incognito")
+# Parameter, die 1:1 an LiteLLM durchgereicht werden. Alles andere, was Open WebUI
+# evtl. mitschickt (metadata, chat_id, features …), wird verworfen.
+PASSTHROUGH_PARAMS = {
+    "temperature",
+    "top_p",
+    "max_tokens",
+    "max_completion_tokens",
+    "stop",
+    "presence_penalty",
+    "frequency_penalty",
+    "seed",
+    "logit_bias",
+    "user",
+    "reasoning_effort",
+    "verbosity",
+    "response_format",
+    "parallel_tool_calls",
+}
+
+
+def parse_model(model_id: str, default_model: str) -> tuple[str, str]:
+    """'brain/gpt-5' → ('brain', 'gpt-5'); unbekanntes Präfix → Modus brain."""
+    if "/" in model_id:
+        mode, _, upstream = model_id.partition("/")
+        if mode in MODES and upstream:
+            return mode, upstream
+    if model_id in MODES:
+        return model_id, default_model
+    return "brain", model_id
+
+
+@dataclass
+class _ToolCall:
+    id: str = ""
+    name: str = ""
+    arguments: str = ""
+
+
+@dataclass
+class _ToolCallAccumulator:
+    calls: dict[int, _ToolCall] = field(default_factory=dict)
+
+    def add(self, deltas: list[dict[str, Any]]) -> None:
+        for i, d in enumerate(deltas):
+            idx = d.get("index", i)
+            call = self.calls.setdefault(idx, _ToolCall())
+            if d.get("id"):
+                call.id = d["id"]
+            fn = d.get("function") or {}
+            if fn.get("name"):
+                call.name += fn["name"]
+            if fn.get("arguments"):
+                call.arguments += fn["arguments"]
+
+    def result(self) -> list[_ToolCall]:
+        out = []
+        for idx in sorted(self.calls):
+            c = self.calls[idx]
+            if not c.id:
+                c.id = f"call_{uuid.uuid4().hex[:12]}"
+            out.append(c)
+        return out
+
+
+class ChatSession:
+    def __init__(self, services: "Services", body: dict[str, Any], headers: dict[str, str]) -> None:
+        self.s = services
+        self.settings = services.settings
+        self.body = body
+        self.requested_model = body.get("model") or ""
+        default_model = self.settings.chat_model_list[0] if self.settings.chat_model_list else "gpt-5"
+        self.mode, self.upstream_model = parse_model(self.requested_model, default_model)
+        self.read_only = self.mode == "incognito"
+        self.client_tools: list[dict[str, Any]] = body.get("tools") or []
+        self.params = {k: v for k, v in body.items() if k in PASSTHROUGH_PARAMS and v is not None}
+        if self.client_tools and body.get("tool_choice"):
+            self.params["tool_choice"] = body["tool_choice"]
+
+        self.incoming = strip_activity(list(body.get("messages") or []))
+        self.conversation_id = conversation_id(headers, self.incoming)
+        self.turn_index = sum(1 for m in self.incoming if m.get("role") == "user")
+        self.executor = ToolExecutor(
+            services.store, services.retriever, read_only=self.read_only, conversation_id=self.conversation_id
+        )
+        self.tool_log: list[dict[str, Any]] = []
+        self.messages: list[dict[str, Any]] = []
+        self.completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+        self.created = int(time.time())
+
+    # ---------------------------------------------------------------- Vorbereitung
+    async def prepare(self) -> None:
+        ctx = await self.s.retriever.build_context(self.incoming)
+        profile = self.s.store.get_profile().get("content") or "_Noch kein Profil vorhanden – es entsteht mit der Zeit aus euren Gesprächen._"
+        now = datetime.now(ZoneInfo(self.settings.timezone))
+        now_str = f"{today_str(self.settings)}, {now:%H:%M} Uhr"
+        mode_hint = ""
+        if self.mode == "incognito":
+            mode_hint = (
+                "- Dies ist ein **Inkognito-Chat**: Nichts aus diesem Gespräch wird gespeichert. "
+                "Du kannst das Gedächtnis lesen, aber nicht verändern.\n"
+            )
+        system = prompts.render(
+            "system",
+            user_name=self.settings.user_name,
+            now=now_str,
+            profile=profile,
+            memories=ctx.text or "_Keine passenden Erinnerungen gefunden._",
+            mode_hint=mode_hint,
+        )
+        self.messages = [{"role": "system", "content": system}, *self.incoming]
+
+    def _tools(self, allow_internal: bool) -> list[dict[str, Any]]:
+        tools = list(self.client_tools)
+        if allow_internal:
+            tools = tool_definitions(self.read_only) + tools
+        return tools
+
+    def _payload(self, allow_internal_tools: bool) -> dict[str, Any]:
+        payload = {**self.params, "model": self.upstream_model, "messages": self.messages}
+        tools = self._tools(allow_internal_tools)
+        if tools:
+            payload["tools"] = tools
+        return payload
+
+    async def _run_tools(self, calls: list[_ToolCall], content: str) -> list[str]:
+        self.messages.append(
+            {
+                "role": "assistant",
+                "content": content or None,
+                "tool_calls": [
+                    {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments or "{}"}}
+                    for c in calls
+                ],
+            }
+        )
+        descriptions = []
+        for c in calls:
+            result = await self._execute(c)
+            self.messages.append({"role": "tool", "tool_call_id": c.id, "content": result})
+            try:
+                args = json.loads(c.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            self.tool_log.append({"name": c.name, "arguments": args, "result": result[:500]})
+            descriptions.append(describe_call(c.name, args))
+        return descriptions
+
+    async def _execute(self, call: _ToolCall) -> str:
+        log.info("Tool-Aufruf %s(%s)", call.name, call.arguments[:200])
+        return await self.executor.execute(call.name, call.arguments or "{}")
+
+    def _chunk(self, delta: dict[str, Any], finish_reason: str | None = None) -> str:
+        data = {
+            "id": self.completion_id,
+            "object": "chat.completion.chunk",
+            "created": self.created,
+            "model": self.requested_model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        }
+        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    # ------------------------------------------------------------------ Streaming
+    async def stream(self) -> AsyncIterator[str]:
+        final_parts: list[str] = []
+        role_sent = False
+        completed = False
+        usage: dict[str, Any] | None = None
+        internal = self.executor.names
+        try:
+            max_iter = self.settings.max_tool_iterations
+            for iteration in range(max_iter + 1):
+                allow_internal = iteration < max_iter
+                acc = _ToolCallAccumulator()
+                finish_reason = None
+                iteration_text: list[str] = []
+                async for chunk in self.s.llm.chat_stream(self._payload(allow_internal)):
+                    if chunk.get("usage"):
+                        usage = chunk["usage"]
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    choice = choices[0]
+                    delta = choice.get("delta") or {}
+                    if delta.get("tool_calls"):
+                        acc.add(delta["tool_calls"])
+                    if choice.get("finish_reason"):
+                        finish_reason = choice["finish_reason"]
+                    out = {k: v for k, v in delta.items() if k not in ("tool_calls", "role") and v is not None}
+                    has_payload = any(v for v in out.values())
+                    if not role_sent and (has_payload or delta.get("role")):
+                        out["role"] = "assistant"
+                        role_sent = True
+                        has_payload = True
+                    if has_payload:
+                        if out.get("content"):
+                            iteration_text.append(out["content"])
+                        yield self._chunk(out)
+
+                calls = acc.result()
+                text = "".join(iteration_text)
+                final_parts.append(text)
+                if calls and allow_internal and all(c.name in internal for c in calls):
+                    descriptions = await self._run_tools(calls, text)
+                    if self.settings.show_tool_activity:
+                        yield self._chunk({"content": activity_block(descriptions)})
+                    continue
+                if calls:
+                    # Tools des Clients (Open WebUI native function calling) → an den Client durchreichen
+                    client_calls = [c for c in calls if c.name not in internal]
+                    yield self._chunk(
+                        {
+                            "tool_calls": [
+                                {
+                                    "index": i,
+                                    "id": c.id,
+                                    "type": "function",
+                                    "function": {"name": c.name, "arguments": c.arguments},
+                                }
+                                for i, c in enumerate(client_calls)
+                            ]
+                        }
+                    )
+                    finish_reason = "tool_calls"
+                final = self._chunk({}, finish_reason or "stop")
+                if usage:
+                    data = json.loads(final[6:])
+                    data["usage"] = usage
+                    final = f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                yield final
+                completed = True
+                break
+        except UpstreamError as e:
+            log.error("Upstream-Fehler: %s", e)
+            if not role_sent:
+                yield self._chunk({"role": "assistant", "content": ""})
+            yield self._chunk({"content": f"\n\n⚠️ Fehler von der LLM-API: {e.message[:500]}"}, "stop")
+        if completed:
+            self.persist("".join(final_parts))
+        yield "data: [DONE]\n\n"
+
+    # -------------------------------------------------------------- Ohne Streaming
+    async def complete(self) -> dict[str, Any]:
+        internal = self.executor.names
+        activity: list[str] = []
+        final_parts: list[str] = []
+        resp: dict[str, Any] = {}
+        max_iter = self.settings.max_tool_iterations
+        for iteration in range(max_iter + 1):
+            allow_internal = iteration < max_iter
+            resp = await self.s.llm.chat(self._payload(allow_internal))
+            msg = (resp.get("choices") or [{}])[0].get("message") or {}
+            content = msg.get("content") or ""
+            calls = [
+                _ToolCall(id=tc.get("id") or "", name=tc["function"]["name"], arguments=tc["function"].get("arguments") or "")
+                for tc in msg.get("tool_calls") or []
+                if tc.get("function")
+            ]
+            final_parts.append(content)
+            if calls and allow_internal and all(c.name in internal for c in calls):
+                activity += await self._run_tools(calls, content)
+                continue
+            break
+
+        resp["model"] = self.requested_model
+        try:
+            msg = resp["choices"][0]["message"]
+            prefix = activity_block(activity) if activity and self.settings.show_tool_activity else ""
+            msg["content"] = prefix + "".join(final_parts[:-1]) + (msg.get("content") or "")
+        except (KeyError, IndexError):
+            pass
+        self.persist("".join(final_parts))
+        return resp
+
+    # --------------------------------------------------------------- Speichern
+    def persist(self, assistant_text: str) -> None:
+        if self.mode == "incognito":
+            return
+        user_msgs = [m for m in self.incoming if m.get("role") == "user"]
+        if not user_msgs:
+            return
+        user_text = text_of(user_msgs[-1].get("content")).strip()
+        if not user_text:
+            return
+        store = self.s.store
+        try:
+            store.upsert_conversation(self.conversation_id, self.mode)
+            turn_id = store.upsert_turn(
+                self.conversation_id,
+                self.turn_index,
+                user_text,
+                assistant_text.strip(),
+                self.upstream_model,
+                self.tool_log,
+            )
+            store.enqueue_job("extract_turn", {"turn_id": turn_id}, dedupe_key=f"turn:{turn_id}")
+            store.enqueue_job(
+                "summarize_conversation",
+                {"conversation_id": self.conversation_id},
+                delay_seconds=self.settings.summary_idle_minutes * 60,
+                dedupe_key=f"summary:{self.conversation_id}",
+            )
+            if self.executor.wrote:
+                store.enqueue_job("index_embeddings", {"changes": 1}, dedupe_key="index")
+            self.s.worker.notify()
+        except Exception:
+            log.exception("Konnte Turn nicht speichern")
