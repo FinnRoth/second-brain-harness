@@ -16,6 +16,7 @@ from ..llm import UpstreamError
 from ..memory.extraction import today_str
 from ..memory.retrieval import text_of
 from ..openwebui import activity_block, conversation_id, strip_activity
+from ..responses_api import RAW_KEY, strip_private
 from .tools import ToolExecutor, describe_call, tool_definitions
 
 if TYPE_CHECKING:
@@ -112,6 +113,14 @@ class ChatSession:
         self.messages: list[dict[str, Any]] = []
         self.tools_disabled = False
         self._conflict_handled = False
+        # Upstream-API: fest konfiguriert oder zur Laufzeit gelernt (dann mit Fallback)
+        self._responses_forced = (
+            self.settings.upstream_api == "responses" or self.upstream_model in self.settings.responses_model_list
+        )
+        self.use_responses = self._responses_forced or (
+            self.upstream_model in services.responses_models
+            and self.upstream_model not in services.responses_unsupported
+        )
         self.completion_id = f"chatcmpl-{uuid.uuid4().hex}"
         self.created = int(time.time())
 
@@ -136,8 +145,12 @@ class ChatSession:
             mode_hint=mode_hint,
         )
         self.messages = [{"role": "system", "content": system}, *self.incoming]
-        if self.upstream_model in self.s.tool_reasoning_conflicts and "reasoning_effort" in self.params:
-            self._resolve_conflict()
+        if (
+            not self.use_responses
+            and self.upstream_model in self.s.tool_reasoning_conflicts
+            and "reasoning_effort" in self.params
+        ):
+            self._resolve_conflict(allow_responses=False)
 
     # ------------------------------------------- Tools vs. reasoning_effort
     @staticmethod
@@ -145,9 +158,16 @@ class ChatSession:
         msg = e.message.lower()
         return "reasoning_effort" in msg and ("tool" in msg or "function" in msg)
 
-    def _resolve_conflict(self) -> None:
+    def _resolve_conflict(self, allow_responses: bool = True) -> None:
         self._conflict_handled = True
-        if self.settings.reasoning_tools_conflict == "prefer_tools":
+        strategy = self.settings.reasoning_tools_conflict
+        if strategy == "use_responses" and allow_responses and self.upstream_model not in self.s.responses_unsupported:
+            self.use_responses = True
+            self.s.responses_models.add(self.upstream_model)
+            log.info("%s: wechsle auf /v1/responses (Tools + Reasoning)", self.upstream_model)
+            return
+        self.s.tool_reasoning_conflicts.add(self.upstream_model)
+        if strategy == "prefer_tools":
             self.params["reasoning_effort"] = "none"
             log.info("%s: reasoning_effort='none', damit Gedächtnis-Tools nutzbar sind", self.upstream_model)
             return
@@ -161,18 +181,33 @@ class ChatSession:
         log.info("%s: Gedächtnis-Tools deaktiviert (Modell erlaubt keine Tools mit reasoning_effort)", self.upstream_model)
 
     def _try_recover(self, e: UpstreamError) -> bool:
-        """True, wenn der Fehler der bekannte Tools/Reasoning-Konflikt war und angepasst wurde."""
-        if self._conflict_handled or not self._is_tool_reasoning_conflict(e):
+        """True, wenn die Anfrage nach einer Anpassung wiederholt werden kann."""
+        if self.use_responses and not self._responses_forced and e.status not in (0, 429):
+            # Automatisch gewählte Responses API funktioniert nicht → zurück zu Chat Completions ohne Tools
+            log.warning(
+                "%s: /v1/responses fehlgeschlagen (%s) – Fallback auf /v1/chat/completions ohne Tools",
+                self.upstream_model,
+                e.message[:300],
+            )
+            self.use_responses = False
+            self.s.responses_models.discard(self.upstream_model)
+            self.s.responses_unsupported.add(self.upstream_model)
+            if "reasoning_effort" in self.params:
+                self._resolve_conflict(allow_responses=False)
+            return True
+        if self._conflict_handled or self.use_responses or not self._is_tool_reasoning_conflict(e):
             return False
-        self.s.tool_reasoning_conflicts.add(self.upstream_model)
         self._resolve_conflict()
         return True
+
+    def _upstream(self):
+        return self.s.responses if self.use_responses else self.s.llm
 
     async def _upstream_stream(self, allow_internal: bool) -> AsyncIterator[dict[str, Any]]:
         while True:
             started = False
             try:
-                async for chunk in self.s.llm.chat_stream(self._payload(allow_internal)):
+                async for chunk in self._upstream().chat_stream(self._payload(allow_internal)):
                     started = True
                     yield chunk
                 return
@@ -183,7 +218,7 @@ class ChatSession:
     async def _upstream_chat(self, allow_internal: bool) -> dict[str, Any]:
         while True:
             try:
-                return await self.s.llm.chat(self._payload(allow_internal))
+                return await self._upstream().chat(self._payload(allow_internal))
             except UpstreamError as e:
                 if not self._try_recover(e):
                     raise
@@ -197,7 +232,8 @@ class ChatSession:
         return tools
 
     def _payload(self, allow_internal_tools: bool) -> dict[str, Any]:
-        payload = {**self.params, "model": self.upstream_model, "messages": self.messages}
+        messages = self.messages if self.use_responses else strip_private(self.messages)
+        payload = {**self.params, "model": self.upstream_model, "messages": messages}
         tools = self._tools(allow_internal_tools)
         if tools:
             payload["tools"] = tools
@@ -206,17 +242,20 @@ class ChatSession:
             payload.pop("parallel_tool_calls", None)
         return payload
 
-    async def _run_tools(self, calls: list[_ToolCall], content: str) -> list[str]:
-        self.messages.append(
-            {
-                "role": "assistant",
-                "content": content or None,
-                "tool_calls": [
-                    {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments or "{}"}}
-                    for c in calls
-                ],
-            }
-        )
+    async def _run_tools(
+        self, calls: list[_ToolCall], content: str, raw: list[dict[str, Any]] | None = None
+    ) -> list[str]:
+        assistant: dict[str, Any] = {
+            "role": "assistant",
+            "content": content or None,
+            "tool_calls": [
+                {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments or "{}"}}
+                for c in calls
+            ],
+        }
+        if raw:
+            assistant[RAW_KEY] = raw  # Responses API: Reasoning-Items für den nächsten Schritt
+        self.messages.append(assistant)
         descriptions = []
         for c in calls:
             result = await self._execute(c)
@@ -247,6 +286,7 @@ class ChatSession:
     async def stream(self) -> AsyncIterator[str]:
         final_parts: list[str] = []
         role_sent = False
+        reasoning_sent = False
         completed = False
         usage: dict[str, Any] | None = None
         internal = self.executor.names
@@ -257,9 +297,13 @@ class ChatSession:
                 acc = _ToolCallAccumulator()
                 finish_reason = None
                 iteration_text: list[str] = []
+                iteration_reasoning = False
+                raw = None
                 async for chunk in self._upstream_stream(allow_internal):
                     if chunk.get("usage"):
                         usage = chunk["usage"]
+                    if chunk.get(RAW_KEY):
+                        raw = chunk[RAW_KEY]
                     choices = chunk.get("choices") or []
                     if not choices:
                         continue
@@ -278,13 +322,17 @@ class ChatSession:
                     if has_payload:
                         if out.get("content"):
                             iteration_text.append(out["content"])
+                        if out.get("reasoning_content"):
+                            if reasoning_sent and not iteration_reasoning:
+                                out["reasoning_content"] = "\n\n" + out["reasoning_content"]
+                            reasoning_sent = iteration_reasoning = True
                         yield self._chunk(out)
 
                 calls = acc.result()
                 text = "".join(iteration_text)
                 final_parts.append(text)
                 if calls and allow_internal and all(c.name in internal for c in calls):
-                    descriptions = await self._run_tools(calls, text)
+                    descriptions = await self._run_tools(calls, text, raw)
                     if self.settings.show_tool_activity:
                         yield self._chunk({"content": activity_block(descriptions)})
                     continue
@@ -340,8 +388,9 @@ class ChatSession:
                 if tc.get("function")
             ]
             final_parts.append(content)
+            raw = resp.pop(RAW_KEY, None)
             if calls and allow_internal and all(c.name in internal for c in calls):
-                activity += await self._run_tools(calls, content)
+                activity += await self._run_tools(calls, content, raw)
                 continue
             break
 

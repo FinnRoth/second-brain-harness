@@ -37,11 +37,20 @@ class Settings(BaseSettings):
     # Agent
     max_tool_iterations: int = 6
     show_tool_activity: bool = True
-    # Manche Modelle erlauben auf /v1/chat/completions keine Tools zusammen mit
-    # reasoning_effort. Was soll dann wegfallen?
+    # Welche Upstream-API für Chats genutzt wird:
+    #   chat      → /v1/chat/completions (Standard)
+    #   responses → /v1/responses (Tools + Reasoning gleichzeitig, Reasoning-Zusammenfassungen)
+    upstream_api: str = "chat"
+    # Modelle, die immer über /v1/responses laufen sollen (kommagetrennt)
+    responses_models: str = ""
+    # Reasoning-Zusammenfassung über die Responses API ("auto", "concise", "detailed", leer = aus)
+    responses_reasoning_summary: str = "auto"
+    # Was tun, wenn ein Modell auf /v1/chat/completions keine Tools zusammen mit
+    # reasoning_effort akzeptiert?
+    #   use_responses    → automatisch auf /v1/responses wechseln (Tools + Reasoning)
     #   prefer_reasoning → Gedächtnis-Tools weglassen (automatisches Erinnern/Lernen läuft weiter)
-    #   prefer_tools     → reasoning_effort weglassen
-    reasoning_tools_conflict: str = "prefer_reasoning"
+    #   prefer_tools     → reasoning_effort=none setzen
+    reasoning_tools_conflict: str = "use_responses"
 
     # Hintergrund-Jobs
     enable_worker: bool = True
@@ -57,6 +66,10 @@ class Settings(BaseSettings):
     @property
     def chat_model_list(self) -> list[str]:
         return [m.strip() for m in self.chat_models.split(",") if m.strip()]
+
+    @property
+    def responses_model_list(self) -> set[str]:
+        return {m.strip() for m in self.responses_models.split(",") if m.strip()}
 
     @property
     def effective_background_model(self) -> str:

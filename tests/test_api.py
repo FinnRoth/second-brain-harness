@@ -200,6 +200,7 @@ def _conflicting_upstream(fake_llm: FakeLLM, seen: list):
 
 
 async def test_reasoning_tool_conflict_drops_tools(services, client, fake_llm: FakeLLM):
+    services.settings.reasoning_tools_conflict = "prefer_reasoning"
     seen: list = []
     _conflicting_upstream(fake_llm, seen)
     fake_llm.handler = lambda p: {"content": "Antwort mit Reasoning"}

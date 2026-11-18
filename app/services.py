@@ -15,6 +15,7 @@ from .memory.indexer import Indexer
 from .memory.profile import ConversationSummarizer, ProfileBuilder
 from .memory.retrieval import Retriever
 from .memory.store import MemoryStore
+from .responses_api import ResponsesBackend
 
 log = logging.getLogger(__name__)
 
@@ -33,8 +34,14 @@ class Services:
         self.summarizer = ConversationSummarizer(self.store, self.llm, self.embedder, settings)
         self.exporter = VaultExporter(self.store, settings.export_dir)
         self.worker = Worker(self)
-        # Modelle, die Tools + reasoning_effort nicht zusammen akzeptieren (zur Laufzeit gelernt)
+        self.responses = ResponsesBackend(self.llm, settings)
+        # Zur Laufzeit gelernt:
+        # - Modelle, die Tools + reasoning_effort auf /chat/completions nicht zusammen akzeptieren
         self.tool_reasoning_conflicts: set[str] = set()
+        # - Modelle, die (automatisch) über /v1/responses laufen
+        self.responses_models: set[str] = set(settings.responses_model_list)
+        # - Modelle, bei denen /v1/responses nicht funktioniert hat
+        self.responses_unsupported: set[str] = set()
 
     async def startup(self) -> None:
         self.store.ensure_self(self.settings.user_name)

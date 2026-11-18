@@ -19,6 +19,8 @@ class FakeLLM:
 
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.responses_calls: list[dict[str, Any]] = []
+        self.responses_handler: Callable[[dict[str, Any]], dict[str, Any]] = lambda p: {"content": "OK"}
         self.handler: Callable[[dict[str, Any]], dict[str, Any]] = lambda p: {"content": "OK"}
         self.background: Callable[[dict[str, Any]], dict[str, Any]] = lambda p: {
             "content": json.dumps({"entities": [], "facts": [], "relations": []})
@@ -73,6 +75,49 @@ class FakeLLM:
                 ],
             }
         yield {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if msg.get("tool_calls") else "stop"}]}
+
+    # ------------------------------------------------------------ Responses API
+    def _responses_output(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.responses_calls.append(payload)
+        msg = self.responses_handler(payload)
+        output = []
+        if msg.get("reasoning") is not None:
+            item = {"id": f"rs_{len(self.responses_calls)}", "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": msg["reasoning"]}] if msg["reasoning"] else []}
+            if "reasoning.encrypted_content" in (payload.get("include") or []):
+                item["encrypted_content"] = f"ENC{len(self.responses_calls)}"
+            output.append(item)
+        for tc in msg.get("tool_calls") or []:
+            output.append({"id": "fc_" + tc["id"], "type": "function_call", "status": "completed",
+                           "call_id": tc["id"], "name": tc["function"]["name"],
+                           "arguments": tc["function"]["arguments"]})
+        if msg.get("content"):
+            output.append({"id": "msg_1", "type": "message", "role": "assistant", "status": "completed",
+                           "content": [{"type": "output_text", "text": msg["content"], "annotations": []}]})
+        return {"id": "resp_1", "object": "response", "status": "completed", "model": payload["model"],
+                "output": output, "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+                                            "output_tokens_details": {"reasoning_tokens": 3}}}
+
+    async def responses(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._responses_output(payload)
+
+    async def responses_stream(self, payload: dict[str, Any]):
+        resp = self._responses_output(payload)
+        yield {"type": "response.created", "response": {"id": "resp_1"}}
+        for item in resp["output"]:
+            if item["type"] == "reasoning":
+                for part in item["summary"]:
+                    yield {"type": "response.reasoning_summary_part.added"}
+                    for piece in re.findall(r".{1,4}", part["text"], re.DOTALL):
+                        yield {"type": "response.reasoning_summary_text.delta", "delta": piece}
+            elif item["type"] == "message":
+                for piece in re.findall(r".{1,4}", item["content"][0]["text"], re.DOTALL):
+                    yield {"type": "response.output_text.delta", "delta": piece}
+            elif item["type"] == "function_call":
+                yield {"type": "response.output_item.added", "item": {**item, "arguments": ""}}
+                yield {"type": "response.function_call_arguments.delta", "delta": item["arguments"]}
+            yield {"type": "response.output_item.done", "item": item}
+        yield {"type": "response.completed", "response": resp}
 
     async def embed(self, model: str, texts: list[str]) -> list[list[float]]:
         # Bag-of-words-Hashing: ähnliche Wörter → ähnliche Vektoren

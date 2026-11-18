@@ -61,9 +61,7 @@ Zusätzlich die Umgebungsvariable `ENABLE_FORWARD_USER_INFO_HEADERS=true` für O
 - Die **eingebaute Memory-Funktion** (Einstellungen → Personalisierung) ausgeschaltet lassen, sonst gibt es doppeltes Gedächtnis.
 - Unter **Admin → Einstellungen → Oberfläche** kann für Titel- und Tag-Generierung ein eigenes "Task-Modell" gewählt werden. Der Harness erkennt diese Anfragen aber auch selbst und reicht sie ohne Gedächtnis durch.
 - **Function Calling** im Modell kann auf "Default" bleiben. Die Gedächtnis-Tools laufen im Harness, nicht in Open WebUI.
-- **Reasoning-Modelle:** Manche Modelle lehnen auf `/v1/chat/completions` Tools zusammen mit `reasoning_effort` ab ("Function tools with reasoning_effort are not supported …"). Der Harness erkennt das und wiederholt die Anfrage automatisch. Was dabei wegfällt, legt `REASONING_TOOLS_CONFLICT` fest:
-  - `prefer_reasoning` (Standard): Es wird ohne Gedächtnis-Tools geantwortet. Das automatische Erinnern und Lernen funktioniert weiter, nur aktives Nachschlagen und "Merk dir" per Tool entfallen. "Merk dir" wird trotzdem im Hintergrund gelernt.
-  - `prefer_tools`: `reasoning_effort` wird auf `none` gesetzt, die Tools bleiben erhalten.
+- **Reasoning-Modelle:** Siehe den Abschnitt "Reasoning-Modelle und Responses API" weiter unten.
 
 ---
 
@@ -94,6 +92,25 @@ Tests:
 ```
 
 ---
+
+## Reasoning-Modelle und Responses API
+
+Manche Modelle (z. B. neuere GPT-Modelle über Azure) erlauben auf `/v1/chat/completions` keine Tools zusammen mit `reasoning_effort`. Über `/v1/responses` geht beides. Der Harness kann deshalb nach hinten die **Responses API** von LiteLLM nutzen. Open WebUI merkt davon nichts, nach vorne bleibt alles Chat Completions.
+
+Es gibt drei Wege, die Responses API zu nutzen:
+
+- **Automatisch (Standard):** Lehnt ein Modell Tools mit Reasoning ab, wechselt der Harness für dieses Modell selbstständig auf `/v1/responses`. Funktioniert auch das nicht, antwortet er über Chat Completions ohne Gedächtnis-Tools.
+- **Immer:** `UPSTREAM_API=responses`
+- **Nur für bestimmte Modelle:** `RESPONSES_MODELS=gpt-6.1,…`
+
+Über die Responses API läuft das so:
+
+- **Tools und Reasoning gleichzeitig:** Das Modell kann während des Nachdenkens im Gedächtnis nachschlagen.
+- **Denkprozess sichtbar:** Reasoning-Zusammenfassungen erscheinen in Open WebUI als einklappbarer Denkprozess. Abschalten mit `RESPONSES_REASONING_SUMMARY=`.
+- **Nichts wird beim Anbieter gespeichert** (`store: false`). Das verschlüsselte Reasoning wird nur innerhalb einer Antwort zwischen den Tool-Schritten zurückgereicht.
+- **Optionale Features fallen automatisch weg:** Lehnt der Anbieter die Reasoning-Zusammenfassung oder das verschlüsselte Reasoning ab, schaltet der Harness es selbst ab und wiederholt die Anfrage.
+
+Wenn die Responses API nicht verfügbar ist, regelt `REASONING_TOOLS_CONFLICT`, was im Konfliktfall passiert: `use_responses` (Standard), `prefer_reasoning` (ohne Tools antworten) oder `prefer_tools` (`reasoning_effort=none`).
 
 ## Embeddings: brauche ich die?
 

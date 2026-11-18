@@ -27,6 +27,10 @@ class LLM(Protocol):
 
     async def embed(self, model: str, texts: list[str]) -> list[list[float]]: ...
 
+    async def responses(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+
+    def responses_stream(self, payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]: ...
+
     async def close(self) -> None: ...
 
 
@@ -48,20 +52,33 @@ class LiteLLMClient:
             timeout=httpx.Timeout(settings.upstream_timeout, connect=10.0),
         )
 
-    async def chat(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         body = {**payload, "stream": False}
         try:
-            resp = await self._client.post("/v1/chat/completions", json=body)
+            resp = await self._client.post(path, json=body)
         except httpx.HTTPError as e:
             raise UpstreamError(0, f"Verbindung fehlgeschlagen: {e}") from e
         if resp.status_code >= 400:
             raise UpstreamError(resp.status_code, resp.text[:2000])
         return resp.json()
 
-    async def chat_stream(self, payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+    async def chat(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._post("/v1/chat/completions", payload)
+
+    async def responses(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._post("/v1/responses", payload)
+
+    def chat_stream(self, payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        return self._stream("/v1/chat/completions", payload)
+
+    def responses_stream(self, payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        return self._stream("/v1/responses", payload)
+
+    async def _stream(self, path: str, payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        """SSE lesen. Funktioniert für Chat Completions (data-only) und Responses (event + data)."""
         body = {**payload, "stream": True}
         try:
-            async with self._client.stream("POST", "/v1/chat/completions", json=body) as resp:
+            async with self._client.stream("POST", path, json=body) as resp:
                 if resp.status_code >= 400:
                     text = (await resp.aread()).decode("utf-8", "replace")
                     raise UpstreamError(resp.status_code, text[:2000])

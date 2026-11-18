@@ -51,6 +51,12 @@ Bei kurzen Rückfragen ("und was meinst du dazu?") wird die vorherige Nutzernach
 - Der Systemprompt besteht aus Persona, Datum und Uhrzeit, Kernprofil und abgerufenen Erinnerungen. Ein eventueller Systemprompt von Open WebUI bleibt danach erhalten.
 - Die Gedächtnis-Tools werden serverseitig ausgeführt, bis zu `MAX_TOOL_ITERATIONS` Runden. In der letzten Runde werden keine Tools mehr angeboten, damit das Modell antworten muss.
 - Text, Reasoning und Usage werden live an Open WebUI gestreamt. Tool-Aktivität erscheint optional als einklappbarer `<details type="memory">`-Block. Dieser wird aus der Historie wieder entfernt und nicht gespeichert.
+- **Upstream-API:** Chat Completions (Standard) oder Responses API (`app/responses_api.py`). Bei der Responses API wird der Chat-Payload übersetzt:
+  - Nachrichten werden zu Input-Items, Tool-Calls zu `function_call`/`function_call_output`.
+  - `reasoning_effort` wird zu `reasoning.effort` plus Zusammenfassung.
+  - Stream-Events werden zurück in Chat-Chunks übersetzt, Reasoning-Zusammenfassungen kommen als `reasoning_content`.
+  - Verschlüsselte Reasoning-Items werden innerhalb des Tool-Loops zurückgereicht, es gilt immer `store: false`.
+  - Lehnt ein Modell Tools mit `reasoning_effort` auf Chat Completions ab, wechselt der Harness automatisch auf die Responses API und merkt sich das pro Modell. Scheitert auch die, folgt ein Fallback ohne Tools.
 - Tools, die Open WebUI selbst mitschickt (native Function Calling), werden an den Client durchgereicht.
 - **Inkognito-Modus**: liest das Gedächtnis, bekommt keine Schreib-Tools, speichert nichts.
 - **Open-WebUI-Hintergrundaufgaben** (Titel, Tags, Follow-ups; erkennbar an `### Task:`) werden ohne Gedächtnis durchgereicht.
