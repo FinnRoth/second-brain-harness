@@ -102,7 +102,9 @@ class PromptBuilder:
             used += cost
         return "\n".join(lines)
 
-    def system_prompt(self, conversation_id: str | None, mode_hints: list[str] | None = None) -> tuple[str, set[int]]:
+    def system_prompt(
+        self, conversation_id: str | None, mode_hints: list[str] | None = None, tools_section: str = ""
+    ) -> tuple[str, set[int]]:
         summary = self.store.get_profile().get("content") or NO_SUMMARY
         saved, saved_ids = self.saved_memories_block()
         last = self.store.last_activity(exclude_id=conversation_id)
@@ -117,6 +119,7 @@ class PromptBuilder:
             summary=summary,
             saved_memories=saved,
             recent_chats=self.recent_chats_block(conversation_id),
+            tools_section=f"\n## Verbundene Tools (MCP)\n{tools_section}\n" if tools_section else "",
         )
         return text, saved_ids
 

@@ -16,8 +16,12 @@ from .memory.extraction import Extractor
 from .memory.indexer import Indexer
 from .memory.profile import ConversationSummarizer, ProfileBuilder
 from .memory.retrieval import Retriever
+from .mcp.manager import MCPManager
 from .memory.store import MemoryStore
 from .responses_api import ResponsesBackend
+from .tools.mcp import MCPToolProvider
+from .tools.memory import MemoryToolProvider
+from .tools.registry import ToolRegistry
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +42,19 @@ class Services:
         self.summarizer = ConversationSummarizer(self.store, self.llm, self.embedder, settings)
         self.exporter = VaultExporter(self.store, settings.export_dir)
         self.worker = Worker(self)
+        self.mcp = MCPManager(
+            settings.mcp_config,
+            settings.mcp_secrets,
+            settings.mcp_log_dir,
+            connect_timeout=settings.mcp_connect_timeout,
+            watch_interval=settings.mcp_watch_interval,
+        )
+        self.tools = ToolRegistry(
+            [MemoryToolProvider(self.store, self.retriever), MCPToolProvider(self.mcp, settings.mcp_max_output_chars)],
+            search_threshold=settings.tool_search_threshold,
+        )
+        # Freigabe-Modi von Inkognito-Chats (werden nicht gespeichert)
+        self.ephemeral_modes: dict[str, str] = {}
         self.responses = ResponsesBackend(self.llm, settings)
         # Zur Laufzeit gelernt:
         # - Modelle, die Tools + reasoning_effort auf /chat/completions nicht zusammen akzeptieren
@@ -55,6 +72,7 @@ class Services:
             self.store.enqueue_job("index_embeddings", dedupe_key="index")
         if self.settings.enable_worker:
             self.worker.start()
+        await self.mcp.start(wait=self.settings.mcp_startup_wait)
         log.info(
             "Harness bereit – Modelle: %s, Hintergrundmodell: %s, Embeddings: %s",
             ", ".join(self.settings.chat_model_list),
@@ -62,7 +80,20 @@ class Services:
             self.settings.embedding_model or "aus (nur Volltextsuche)",
         )
 
+    def mcp_instructions(self) -> str:
+        """Kurzbeschreibung der verbundenen MCP-Server für den Systemprompt (stabil → cachebar)."""
+        lines = []
+        for name, conn in sorted(self.mcp.connections.items()):
+            if conn.status != "ready" or not conn.tools:
+                continue
+            line = f"- **{name}** ({len(conn.tools)} Tools)"
+            if conn.instructions:
+                line += ": " + " ".join(conn.instructions.split())[:400]
+            lines.append(line)
+        return "\n".join(lines)
+
     async def shutdown(self) -> None:
+        await self.mcp.stop()
         await self.worker.stop()
         await self.llm.close()
         self.db.close()

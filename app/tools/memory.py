@@ -1,8 +1,4 @@
-"""Gedächtnis-Tools, die das Modell während einer Antwort aufrufen kann.
-
-Die Tools werden serverseitig ausgeführt – Open WebUI sieht davon nur
-(optional) eine kleine Aktivitätsanzeige.
-"""
+"""Interne Gedächtnis-Tools (ToolProvider)."""
 
 from __future__ import annotations
 
@@ -12,6 +8,7 @@ from typing import Any
 
 from ..memory.retrieval import TYPE_LABELS, Retriever
 from ..memory.store import ENTITY_TYPES, MemoryStore
+from .base import ToolContext, ToolResult, ToolSpec
 
 log = logging.getLogger(__name__)
 
@@ -115,10 +112,6 @@ TOOL_DEFS: dict[str, dict[str, Any]] = {
 WRITE_TOOLS = {"remember", "forget_fact", "update_entity"}
 
 
-def tool_definitions(read_only: bool) -> list[dict[str, Any]]:
-    return [d for name, d in TOOL_DEFS.items() if not (read_only and name in WRITE_TOOLS)]
-
-
 def describe_call(name: str, args: dict[str, Any]) -> str:
     """Kurze, menschenlesbare Beschreibung für die Aktivitätsanzeige."""
     if name == "search_memory":
@@ -138,41 +131,45 @@ def describe_call(name: str, args: dict[str, Any]) -> str:
     return name
 
 
-class ToolExecutor:
-    def __init__(
-        self,
-        store: MemoryStore,
-        retriever: Retriever,
-        read_only: bool,
-        conversation_id: str | None = None,
-    ) -> None:
+class MemoryToolProvider:
+    """Stellt die Gedächtnis-Tools bereit. Lesende sind `read`, schreibende `memory`."""
+
+    def __init__(self, store: MemoryStore, retriever: Retriever) -> None:
         self.store = store
         self.retriever = retriever
-        self.read_only = read_only
-        self.conversation_id = conversation_id
-        self.wrote = False
 
-    @property
-    def names(self) -> set[str]:
-        return {d["function"]["name"] for d in tool_definitions(self.read_only)}
+    def list_tools(self, ctx: ToolContext) -> list[ToolSpec]:
+        specs = []
+        for name, d in TOOL_DEFS.items():
+            fn = d["function"]
+            specs.append(
+                ToolSpec(
+                    name=name,
+                    description=fn["description"],
+                    parameters=fn["parameters"],
+                    kind="memory" if name in WRITE_TOOLS else "read",
+                    source="gedächtnis",
+                )
+            )
+        return specs
 
-    async def execute(self, name: str, raw_args: str | dict[str, Any]) -> str:
+    async def call(self, name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        handler = getattr(self, f"_t_{name}", None)
+        if handler is None:
+            return ToolResult(f"Fehler: Tool '{name}' ist nicht verfügbar.", is_error=True)
         try:
-            args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args or {})
-        except json.JSONDecodeError:
-            return "Fehler: Argumente sind kein gültiges JSON."
-        if name not in self.names:
-            return f"Fehler: Tool '{name}' ist nicht verfügbar."
-        try:
-            return await getattr(self, f"_t_{name}")(**args)
+            text = await handler(ctx, **args)
         except TypeError as e:
-            return f"Fehler: ungültige Argumente ({e})."
+            return ToolResult(f"Fehler: ungültige Argumente ({e}).", is_error=True)
         except Exception as e:  # Tool-Fehler sollen die Antwort nie abbrechen
             log.exception("Tool %s fehlgeschlagen", name)
-            return f"Fehler bei der Ausführung: {e}"
+            return ToolResult(f"Fehler bei der Ausführung: {e}", is_error=True)
+        if name in WRITE_TOOLS:
+            ctx.memory_written = True
+        return ToolResult(text)
 
     # ------------------------------------------------------------------ Lesen
-    async def _t_search_memory(self, query: str, limit: int = 12, **_: Any) -> str:
+    async def _t_search_memory(self, ctx: ToolContext, query: str, limit: int = 12, **_: Any) -> str:
         ent_ids = self.retriever.detect_entities(query)
         hits = await self.retriever.search_facts(query, limit=max(1, min(int(limit), 40)), entity_ids=ent_ids)
         lines = []
@@ -185,7 +182,7 @@ class ToolExecutor:
             lines.append(f"- F{f['id']} ({f['created_at'][:10]}; {ents}): {f['content']}")
         return "\n".join(lines) or "Keine passenden Erinnerungen gefunden."
 
-    async def _t_get_entity(self, name: str, **_: Any) -> str:
+    async def _t_get_entity(self, ctx: ToolContext, name: str, **_: Any) -> str:
         ent = self.store.resolve_entity(name)
         if not ent:
             candidates = self.store.list_entities(q=name, limit=5)
@@ -201,7 +198,7 @@ class ToolExecutor:
             out += [f"- F{f['id']} ({f['created_at'][:10]}): {f['content']}" for f in facts]
         return "\n".join(out)
 
-    async def _t_list_entities(self, type: str, include_archived: bool = False, **_: Any) -> str:
+    async def _t_list_entities(self, ctx: ToolContext, type: str, include_archived: bool = False, **_: Any) -> str:
         ents = self.store.list_entities(type=type, status=None if include_archived else "active", limit=200)
         if not ents:
             return "Keine Einträge."
@@ -217,7 +214,7 @@ class ToolExecutor:
             lines.append(line)
         return "\n".join(lines)
 
-    async def _t_search_past_chats(self, query: str, limit: int = 6, **_: Any) -> str:
+    async def _t_search_past_chats(self, ctx: ToolContext, query: str, limit: int = 6, **_: Any) -> str:
         limit = max(1, min(int(limit), 20))
         out = []
         seen_convs = set()
@@ -233,8 +230,7 @@ class ToolExecutor:
         return "\n".join(out) or "Keine passenden früheren Gespräche gefunden."
 
     # --------------------------------------------------------------- Schreiben
-    async def _t_remember(
-        self,
+    async def _t_remember(self, ctx: ToolContext,
         content: str,
         entities: list[dict[str, Any]] | None = None,
         importance: int = 4,
@@ -261,26 +257,23 @@ class ToolExecutor:
             ids,
             category=category,
             importance=importance,
-            source_conversation_id=self.conversation_id,
+            source_conversation_id=ctx.conversation_id,
             pinned=True,  # = „Gespeicherte Erinnerung“, steht ab jetzt in jedem Chat
         )
-        self.wrote = True
         return f"Gespeichert als F{fid}."
 
-    async def _t_forget_fact(self, fact_id: str | int, replacement: str | None = None, **_: Any) -> str:
+    async def _t_forget_fact(self, ctx: ToolContext, fact_id: str | int, replacement: str | None = None, **_: Any) -> str:
         fid = int(str(fact_id).strip().lstrip("Ff"))
         fact = self.store.get_fact(fid)
         if not fact or fact["status"] != "active":
             return f"F{fid} existiert nicht oder ist nicht aktiv."
-        self.wrote = True
         if replacement:
-            new_id = self.store.supersede_fact(fid, replacement, source_conversation_id=self.conversation_id)
+            new_id = self.store.supersede_fact(fid, replacement, source_conversation_id=ctx.conversation_id)
             return f"F{fid} ersetzt durch F{new_id}."
         self.store.delete_fact(fid)
         return f"F{fid} gelöscht."
 
-    async def _t_update_entity(
-        self,
+    async def _t_update_entity(self, ctx: ToolContext,
         name: str,
         summary: str | None = None,
         attributes: dict[str, Any] | None = None,
@@ -291,5 +284,4 @@ class ToolExecutor:
         if not ent:
             return f"Keine Entität '{name}' bekannt."
         self.store.update_entity(ent["id"], summary=summary, attributes=attributes, status=status)
-        self.wrote = True
         return f"E{ent['id']} ({ent['name']}) aktualisiert."

@@ -1,4 +1,12 @@
-"""Eine Chat-Anfrage: Kontext anreichern → Agent-Loop mit Tools → speichern."""
+"""Eine Chat-Anfrage: Kontext anreichern → Agent-Loop mit Tools → speichern.
+
+Ablauf:
+1. Modus-Befehle (/plan, /ask, /auto) auswerten, offene Freigaben erledigen
+2. Systemprompt (stabil) + <kontext>-Block (pro Nachricht) bauen
+3. Agent-Loop: Upstream-Call (Chat Completions oder Responses API), Tools ausführen
+   (Gedächtnis, MCP), bis das Modell antwortet
+4. Turn speichern, Dreaming einplanen
+"""
 
 from __future__ import annotations
 
@@ -13,7 +21,10 @@ from ..llm import UpstreamError
 from ..memory.retrieval import text_of
 from ..openwebui import activity_block, conversation_id, strip_activity
 from ..responses_api import RAW_KEY, strip_private
-from .tools import ToolExecutor, describe_call, tool_definitions
+from ..tools.base import ToolContext, ToolResult
+from ..tools.memory import describe_call
+from ..tools.permissions import MODE_DESCRIPTIONS, classify_reply, parse_mode_command
+from ..tools.registry import TOOL_SEARCH, ToolRegistry, ToolSet, short_args
 
 if TYPE_CHECKING:
     from ..services import Services
@@ -85,6 +96,21 @@ class _ToolCallAccumulator:
         return out
 
 
+def _strip_mode_commands(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
+    """Entfernt /plan, /ask, /auto am Anfang von Nutzernachrichten; liefert den Befehl der letzten."""
+    out, last_cmd = [], None
+    last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=-1)
+    for i, m in enumerate(messages):
+        if m.get("role") == "user" and isinstance(m.get("content"), str):
+            cmd, rest = parse_mode_command(m["content"])
+            if cmd:
+                m = {**m, "content": rest.strip() or f"[Modus auf „{cmd}“ gestellt]"}
+                if i == last_user:
+                    last_cmd = cmd
+        out.append(m)
+    return out, last_cmd
+
+
 class ChatSession:
     def __init__(self, services: "Services", body: dict[str, Any], headers: dict[str, str]) -> None:
         self.s = services
@@ -93,19 +119,28 @@ class ChatSession:
         self.requested_model = body.get("model") or ""
         default_model = self.settings.chat_model_list[0] if self.settings.chat_model_list else "gpt-5"
         self.mode, self.upstream_model = parse_model(self.requested_model, default_model)
-        self.read_only = self.mode == "incognito"
+        self.incognito = self.mode == "incognito"
         self.client_tools: list[dict[str, Any]] = body.get("tools") or []
         self.params = {k: v for k, v in body.items() if k in PASSTHROUGH_PARAMS and v is not None}
         if self.client_tools and body.get("tool_choice"):
             self.params["tool_choice"] = body["tool_choice"]
 
-        self.incoming = strip_activity(list(body.get("messages") or []))
-        self.conversation_id = conversation_id(headers, self.incoming)
+        incoming = strip_activity(list(body.get("messages") or []))
+        self.conversation_id = conversation_id(headers, incoming)
+        self.incoming, mode_cmd = _strip_mode_commands(incoming)
         self.turn_index = sum(1 for m in self.incoming if m.get("role") == "user")
-        self.executor = ToolExecutor(
-            services.store, services.retriever, read_only=self.read_only, conversation_id=self.conversation_id
+        self.mode_changed = mode_cmd
+        permission_mode = mode_cmd or self._stored_permission_mode() or self.settings.permission_mode
+        if mode_cmd:
+            self._store_permission_mode(mode_cmd)
+
+        self.registry: ToolRegistry = services.tools
+        self.ctx = ToolContext(
+            conversation_id=self.conversation_id, incognito=self.incognito, permission_mode=permission_mode
         )
+        self.toolset: ToolSet = ToolSet({}, {})
         self.tool_log: list[dict[str, Any]] = []
+        self.pre_activity: list[str] = []
         self.messages: list[dict[str, Any]] = []
         self.tools_disabled = False
         self._conflict_handled = False
@@ -120,19 +155,47 @@ class ChatSession:
         self.completion_id = f"chatcmpl-{uuid.uuid4().hex}"
         self.created = int(time.time())
 
+    # ------------------------------------------------------------ Freigabe-Modus
+    def _stored_permission_mode(self) -> str | None:
+        if self.incognito:
+            return self.s.ephemeral_modes.get(self.conversation_id)
+        return self.s.store.get_permission_mode(self.conversation_id)
+
+    def _store_permission_mode(self, mode: str) -> None:
+        if self.incognito:
+            self.s.ephemeral_modes[self.conversation_id] = mode
+        else:
+            self.s.store.set_permission_mode(self.conversation_id, mode, self.mode)
+
     # ---------------------------------------------------------------- Vorbereitung
     async def prepare(self) -> None:
+        self._refresh_tools()
+        approvals_note = await self._handle_pending_approvals()
+
         mode_hints = []
-        if self.mode == "incognito":
+        if self.incognito:
             mode_hints.append(
                 "Dies ist ein **Inkognito-Chat**: Nichts aus diesem Gespräch wird gespeichert. "
                 "Du kannst das Gedächtnis lesen, aber nicht verändern."
             )
         pb = self.s.prompt_builder
-        system, saved_ids = pb.system_prompt(self.conversation_id, mode_hints)
-        ctx = await pb.turn_context(self.incoming, exclude_fact_ids=saved_ids)
-        self.messages = [{"role": "system", "content": system}, *pb.inject(self.incoming, ctx.text)]
-        if self.turn_index == 1 and self.mode != "incognito":
+        system, saved_ids = pb.system_prompt(self.conversation_id, mode_hints, self.s.mcp_instructions())
+        turn = await pb.turn_context(self.incoming, exclude_fact_ids=saved_ids)
+
+        extra = []
+        has_external = any(not r.spec.source == "gedächtnis" for r in self.toolset.tools.values()) or bool(
+            self.toolset.deferred
+        )
+        if has_external or self.ctx.permission_mode != self.settings.permission_mode or self.mode_changed:
+            extra.append(f"Freigabe-Modus: {self.ctx.permission_mode}. {MODE_DESCRIPTIONS[self.ctx.permission_mode]}")
+        if self.mode_changed:
+            extra.append(f"Der Nutzer hat gerade in den Modus „{self.mode_changed}“ gewechselt. Bestätige das kurz.")
+        if approvals_note:
+            extra.append(approvals_note)
+        context = "\n\n".join([turn.text, *extra])
+        self.messages = [{"role": "system", "content": system}, *pb.inject(self.incoming, context)]
+
+        if self.turn_index == 1 and not self.incognito:
             # Neuer Chat: ausstehendes Dreaming anderer Chats vorziehen, damit es bald im Gedächtnis ist
             if self.s.store.expedite_jobs("dream_conversation", exclude_dedupe_key=f"dream:{self.conversation_id}"):
                 self.s.worker.notify()
@@ -142,6 +205,47 @@ class ChatSession:
             and "reasoning_effort" in self.params
         ):
             self._resolve_conflict(allow_responses=False)
+
+    def _refresh_tools(self) -> None:
+        self.toolset = self.registry.resolve(self.ctx)
+
+    async def _handle_pending_approvals(self) -> str:
+        """Offene Freigaben: kurze Zustimmung führt aus, Ablehnung verwirft, alles andere lässt verfallen."""
+        store = self.s.store
+        pending = store.pending_approvals(self.conversation_id)
+        if not pending:
+            return ""
+        users = [m for m in self.incoming if m.get("role") == "user"]
+        verdict = classify_reply(text_of(users[-1].get("content")) if users else "")
+        if verdict == "yes":
+            lines = []
+            for a in pending:
+                result = await self._execute_approved(a["tool_name"], a["arguments"])
+                store.resolve_approval(a["id"], "approved", result.text[:4000])
+                self.tool_log.append(
+                    {"name": a["tool_name"], "arguments": a["arguments"], "result": result.text[:500], "approved": True}
+                )
+                self.pre_activity.append(f"✅ Freigegeben: {self._describe(a['tool_name'], a['arguments'])}")
+                lines.append(f"- {a['tool_name']} {short_args(a['arguments'])} → {result.text[:3000]}")
+            return (
+                "Der Nutzer hat die vorgemerkten Aktionen freigegeben; sie wurden soeben ausgeführt:\n"
+                + "\n".join(lines)
+                + "\nBerichte kurz über das Ergebnis."
+            )
+        status = "rejected" if verdict == "no" else "expired"
+        for a in pending:
+            store.resolve_approval(a["id"], status)
+        if verdict == "no":
+            names = ", ".join(a["tool_name"] for a in pending)
+            return f"Der Nutzer hat die vorgemerkten Aktionen abgelehnt ({names}). Sie wurden NICHT ausgeführt."
+        return ""
+
+    async def _execute_approved(self, name: str, args: dict[str, Any]) -> ToolResult:
+        rt = self.toolset.tools.get(name) or self.toolset.deferred.get(name)
+        if rt is None or rt.provider is None:
+            return ToolResult(f"Fehler: Tool '{name}' ist im aktuellen Modus nicht verfügbar.", is_error=True)
+        log.info("Freigegebener Tool-Aufruf %s(%s)", name, short_args(args, 200))
+        return await rt.provider.call(name, args, self.ctx)
 
     # ------------------------------------------- Tools vs. reasoning_effort
     @staticmethod
@@ -160,21 +264,20 @@ class ChatSession:
         self.s.tool_reasoning_conflicts.add(self.upstream_model)
         if strategy == "prefer_tools":
             self.params["reasoning_effort"] = "none"
-            log.info("%s: reasoning_effort='none', damit Gedächtnis-Tools nutzbar sind", self.upstream_model)
+            log.info("%s: reasoning_effort='none', damit Tools nutzbar sind", self.upstream_model)
             return
         self.tools_disabled = True
         self.messages[0] = {
             **self.messages[0],
             "content": self.messages[0]["content"]
-            + "\n\n_Hinweis: In diesem Chat stehen dir keine Gedächtnis-Tools zur Verfügung. Nutze die oben "
-            "bereitgestellten Erinnerungen; neue Informationen werden nach der Antwort automatisch gespeichert._",
+            + "\n\n_Hinweis: In diesem Chat stehen dir keine Tools zur Verfügung (auch keine Gedächtnis-Tools). "
+            "Nutze die bereitgestellten Erinnerungen; neue Informationen werden automatisch gespeichert._",
         }
-        log.info("%s: Gedächtnis-Tools deaktiviert (Modell erlaubt keine Tools mit reasoning_effort)", self.upstream_model)
+        log.info("%s: Tools deaktiviert (Modell erlaubt keine Tools mit reasoning_effort)", self.upstream_model)
 
     def _try_recover(self, e: UpstreamError) -> bool:
         """True, wenn die Anfrage nach einer Anpassung wiederholt werden kann."""
         if self.use_responses and not self._responses_forced and e.status not in (0, 429):
-            # Automatisch gewählte Responses API funktioniert nicht → zurück zu Chat Completions ohne Tools
             log.warning(
                 "%s: /v1/responses fehlgeschlagen (%s) – Fallback auf /v1/chat/completions ohne Tools",
                 self.upstream_model,
@@ -191,6 +294,7 @@ class ChatSession:
         self._resolve_conflict()
         return True
 
+    # ----------------------------------------------------------------- Upstream
     def _upstream(self):
         return self.s.responses if self.use_responses else self.s.llm
 
@@ -219,7 +323,7 @@ class ChatSession:
             return []
         tools = list(self.client_tools)
         if allow_internal:
-            tools = tool_definitions(self.read_only) + tools
+            tools = self.registry.definitions(self.toolset.tools) + tools
         return tools
 
     def _payload(self, allow_internal_tools: bool) -> dict[str, Any]:
@@ -232,6 +336,19 @@ class ChatSession:
             payload.pop("tool_choice", None)
             payload.pop("parallel_tool_calls", None)
         return payload
+
+    @property
+    def internal_names(self) -> set[str]:
+        return set(self.toolset.tools)
+
+    # ------------------------------------------------------------------- Tools
+    def _describe(self, name: str, args: dict[str, Any]) -> str:
+        rt = self.toolset.tools.get(name) or self.toolset.deferred.get(name)
+        if rt and rt.spec.source.startswith("mcp:"):
+            return f"🔧 {rt.spec.source[4:]} · {rt.spec.title} {short_args(args, 80)}"
+        if name == TOOL_SEARCH:
+            return f"🔎 Tools gesucht: „{args.get('query', '')}“"
+        return describe_call(name, args)
 
     async def _run_tools(
         self, calls: list[_ToolCall], content: str, raw: list[dict[str, Any]] | None = None
@@ -249,19 +366,44 @@ class ChatSession:
         self.messages.append(assistant)
         descriptions = []
         for c in calls:
-            result = await self._execute(c)
-            self.messages.append({"role": "tool", "tool_call_id": c.id, "content": result})
             try:
                 args = json.loads(c.arguments or "{}")
-            except json.JSONDecodeError:
+                if not isinstance(args, dict):
+                    raise ValueError("kein Objekt")
+            except (json.JSONDecodeError, ValueError):
+                args = None
+            if args is None:
+                result = ToolResult("Fehler: Argumente sind kein gültiges JSON-Objekt.", is_error=True)
+                desc = f"⚠️ {c.name}: ungültige Argumente"
                 args = {}
-            self.tool_log.append({"name": c.name, "arguments": args, "result": result[:500]})
-            descriptions.append(describe_call(c.name, args))
+            else:
+                result, desc = await self._execute(c.name, args)
+            self.messages.append({"role": "tool", "tool_call_id": c.id, "content": result.text})
+            self.tool_log.append({"name": c.name, "arguments": args, "result": result.text[:500]})
+            descriptions.append(desc)
+        self._refresh_tools()  # tool_search kann neue Tools freigeschaltet haben
         return descriptions
 
-    async def _execute(self, call: _ToolCall) -> str:
-        log.info("Tool-Aufruf %s(%s)", call.name, call.arguments[:200])
-        return await self.executor.execute(call.name, call.arguments or "{}")
+    async def _execute(self, name: str, args: dict[str, Any]) -> tuple[ToolResult, str]:
+        log.info("Tool-Aufruf %s(%s)", name, short_args(args, 200))
+        if name == TOOL_SEARCH:
+            return self.registry.search(self.toolset, str(args.get("query", "")), self.ctx), self._describe(name, args)
+        rt = self.toolset.tools.get(name)
+        if rt is None or rt.provider is None:
+            return ToolResult(f"Fehler: Tool '{name}' ist nicht verfügbar.", is_error=True), f"⚠️ {name} nicht verfügbar"
+        if rt.decision == "ask":
+            desc = self._describe(name, args)
+            aid = self.s.store.create_approval(self.conversation_id, name, args, desc)
+            user = self.settings.user_name
+            return (
+                ToolResult(
+                    f"Diese Aktion braucht die Freigabe von {user} und wurde vorgemerkt (Freigabe #{aid}), "
+                    "aber NICHT ausgeführt. Erkläre kurz, was du tun möchtest und warum, und bitte um Bestätigung: "
+                    f"{user} antwortet mit „ok“ zum Ausführen oder „nein“ zum Abbrechen. Rufe das Tool nicht erneut auf."
+                ),
+                f"⏸️ Wartet auf Freigabe: {desc}",
+            )
+        return await rt.provider.call(name, args, self.ctx), self._describe(name, args)
 
     def _chunk(self, delta: dict[str, Any], finish_reason: str | None = None) -> str:
         data = {
@@ -280,8 +422,10 @@ class ChatSession:
         reasoning_sent = False
         completed = False
         usage: dict[str, Any] | None = None
-        internal = self.executor.names
         try:
+            if self.pre_activity and self.settings.show_tool_activity:
+                yield self._chunk({"role": "assistant", "content": activity_block(self.pre_activity)})
+                role_sent = True
             max_iter = self.settings.max_tool_iterations
             for iteration in range(max_iter + 1):
                 allow_internal = iteration < max_iter
@@ -322,6 +466,7 @@ class ChatSession:
                 calls = acc.result()
                 text = "".join(iteration_text)
                 final_parts.append(text)
+                internal = self.internal_names
                 if calls and allow_internal and all(c.name in internal for c in calls):
                     descriptions = await self._run_tools(calls, text, raw)
                     if self.settings.show_tool_activity:
@@ -363,8 +508,7 @@ class ChatSession:
 
     # -------------------------------------------------------------- Ohne Streaming
     async def complete(self) -> dict[str, Any]:
-        internal = self.executor.names
-        activity: list[str] = []
+        activity: list[str] = list(self.pre_activity)
         final_parts: list[str] = []
         resp: dict[str, Any] = {}
         max_iter = self.settings.max_tool_iterations
@@ -374,12 +518,17 @@ class ChatSession:
             msg = (resp.get("choices") or [{}])[0].get("message") or {}
             content = msg.get("content") or ""
             calls = [
-                _ToolCall(id=tc.get("id") or "", name=tc["function"]["name"], arguments=tc["function"].get("arguments") or "")
+                _ToolCall(
+                    id=tc.get("id") or f"call_{uuid.uuid4().hex[:12]}",
+                    name=tc["function"]["name"],
+                    arguments=tc["function"].get("arguments") or "",
+                )
                 for tc in msg.get("tool_calls") or []
                 if tc.get("function")
             ]
             final_parts.append(content)
             raw = resp.pop(RAW_KEY, None)
+            internal = self.internal_names
             if calls and allow_internal and all(c.name in internal for c in calls):
                 activity += await self._run_tools(calls, content, raw)
                 continue
@@ -397,7 +546,7 @@ class ChatSession:
 
     # --------------------------------------------------------------- Speichern
     def persist(self, assistant_text: str) -> None:
-        if self.mode == "incognito":
+        if self.incognito:
             return
         user_msgs = [m for m in self.incoming if m.get("role") == "user"]
         if not user_msgs:
@@ -423,7 +572,7 @@ class ChatSession:
                 delay_seconds=self.settings.dream_idle_minutes * 60,
                 dedupe_key=f"dream:{self.conversation_id}",
             )
-            if self.executor.wrote:
+            if self.ctx.memory_written:
                 store.enqueue_job("index_embeddings", {"changes": 1}, dedupe_key="index")
             self.s.worker.notify()
         except Exception:

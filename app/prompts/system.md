@@ -22,3 +22,4 @@ Heute ist {{today}}.{{last_activity}}
 
 ## Letzte Gespräche
 {{recent_chats}}
+{{tools_section}}

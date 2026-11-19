@@ -147,6 +147,10 @@ def settings(tmp_path) -> Settings:
         enable_worker=False,
         export_dir=str(tmp_path / "vault"),
         embedding_model="",
+        mcp_config=str(tmp_path / "mcp.json"),
+        mcp_secrets=str(tmp_path / "secrets.env"),
+        mcp_log_dir=str(tmp_path / "mcp-logs"),
+        mcp_watch_interval=0,
     )
 
 

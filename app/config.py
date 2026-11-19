@@ -35,7 +35,20 @@ class Settings(BaseSettings):
     max_detected_entities: int = 6
 
     # Agent
-    max_tool_iterations: int = 6
+    max_tool_iterations: int = 8
+    # Freigabe-Modus für Tools (plan | ask | auto), pro Chat per /plan, /ask, /auto änderbar
+    permission_mode: str = "ask"
+    # Ab so vielen Tools bekommt das Modell statt aller Schemas eine Tool-Suche
+    tool_search_threshold: int = 40
+
+    # MCP-Server (Format wie Claude Code: {"mcpServers": {...}})
+    mcp_config: str = "./config/mcp.json"
+    mcp_secrets: str = "./config/secrets.env"
+    mcp_log_dir: str = "./data/logs/mcp"
+    mcp_startup_wait: float = 20.0  # beim Start so lange auf Server warten (danach laufen sie im Hintergrund an)
+    mcp_connect_timeout: float = 120.0  # erster Start per npx/uvx kann dauern (Download)
+    mcp_max_output_chars: int = 20000
+    mcp_watch_interval: float = 5.0  # Config-Änderungen werden automatisch übernommen (0 = aus)
     show_tool_activity: bool = True
     # Welche Upstream-API für Chats genutzt wird:
     #   chat      → /v1/chat/completions (Standard)
