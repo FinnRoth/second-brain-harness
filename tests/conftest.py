@@ -153,6 +153,7 @@ def settings(tmp_path) -> Settings:
         mcp_secrets=str(tmp_path / "secrets.env"),
         mcp_log_dir=str(tmp_path / "mcp-logs"),
         mcp_watch_interval=0,
+        web_dir=str(tmp_path / "web"),
     )
 
 

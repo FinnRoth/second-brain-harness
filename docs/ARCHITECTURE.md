@@ -3,9 +3,10 @@
 ## Überblick
 
 ```
-Open WebUI ──(OpenAI-API)──▶ app/api/openai_compat.py
+App (web/, React) ──/api──▶ app/api/native.py ──▶ RunManager (app/agent/runs.py)
+Open WebUI ──(OpenAI-API)──▶ app/api/openai_compat.py ──▶ OpenAIChat (app/agent/openai_adapter.py)
                                    │
-                             ChatSession (app/agent/session.py)
+                             ChatSession (app/agent/session.py) → typisierte Events
              ┌─────────────────────┼─────────────────────────────┐
      PromptBuilder            ToolRegistry                  Upstream
   (app/memory/context.py)   (app/tools/registry.py)     LiteLLM: Chat Completions
@@ -18,6 +19,25 @@ Open WebUI ──(OpenAI-API)──▶ app/api/openai_compat.py
 ```
 
 Alles läuft in **einem Prozess**: API, Hintergrund-Worker, MCP-Host und SQLite. Für den Betrieb ist der Harness als nativer Dienst auf dem Mac (LaunchAgent) vorgesehen. Dadurch laufen MCP-Server direkt auf dem Mac und kommen an Dateien und Apps heran.
+
+## App & Runs
+
+- **Die App** (`web/`, React + Vite) wird gebaut nach `web/dist` und vom Harness unter `/` ausgeliefert, inklusive SPA-Fallback. Als PWA lässt sie sich installieren (Safari: "Zum Dock hinzufügen"). Docker braucht es dafür nicht.
+- **ChatSession** liefert typisierte Events:
+  - `text` und `reasoning`
+  - `tool_start`, `approval_required`, `approval_resolved` und `tool_end`
+  - `done` und `error`
+
+  Zwei Konsumenten verarbeiten sie:
+  - **RunManager** (App): Jede Antwort ist ein Hintergrund-Task. Events werden gepuffert und sind über `GET /api/runs/{id}/events?after=n` (SSE) beliebig oft abspielbar. Ein Neuladen oder Schließen des Fensters bricht deshalb nichts ab.
+    - Freigaben: Der Run wartet auf ein Future, das `POST /api/approvals/{id}` auflöst (`once` / `chat` / `always`). Nach 30 Minuten gilt die Freigabe als abgelehnt.
+    - Stopp bricht den Task ab und speichert die Teilantwort.
+  - **OpenAIChat** (Open WebUI): Er übersetzt die Events in Chat-Completion-Chunks. Freigaben laufen dort über vorgemerkte Aktionen und ein "ok" in der nächsten Nachricht.
+- **Nachrichten** liegen in `messages`, inklusive `parts` (Denkprozess, Text, Tool-Karten, Anhänge) für die Darstellung. Das LLM bekommt nur die Texte (und Anhänge). Für das Gedächtnis wird zusätzlich ein Turn geschrieben.
+  - Bearbeiten und Neu generieren löschen ab der betroffenen Nachricht, samt Turns.
+  - Chats aus Open WebUI (nur Turns) werden beim ersten Öffnen in Nachrichten übernommen.
+- **Inkognito-Chats** (`inc-…`) leben nur im Speicher.
+- **Tool-Regeln aus der App** (`PUT /api/tools/{name}/policy`, Tabelle `meta`) gehen der Config vor. "In diesem Chat immer" landet in `conversations.allowed_tools`.
 
 ## Gedächtnis
 
@@ -84,6 +104,8 @@ user     <kontext> Uhrzeit · Freigabe-Modus · Steckbriefe erwähnter Entitäte
 
 ### Freigaben (ask-Modus)
 
+In der App pausiert der Run und zeigt Buttons (siehe "App & Runs"). Für Open WebUI gilt:
+
 1. Das Modell ruft ein veränderndes Tool auf. Der Harness speichert den Aufruf in `approvals`, führt ihn aber **nicht** aus. Das Modell bekommt als Ergebnis die Anweisung, um Bestätigung zu bitten. In Open WebUI erscheint "⏸️ Wartet auf Freigabe".
 2. Bei der nächsten Nachricht im selben Chat:
    - Eine kurze Zustimmung ("ok", "ja", "mach") führt alle vorgemerkten Aktionen aus. Die Ergebnisse landen im `<kontext>`.
@@ -91,7 +113,6 @@ user     <kontext> Uhrzeit · Freigabe-Modus · Steckbriefe erwähnter Entitäte
    - Bei jeder anderen Nachricht verfallen sie.
 
    Das Modell kann sich also nicht selbst freigeben.
-3. Mit einer eigenen UI können dieselben Freigaben später über Buttons laufen. Die Datenbasis dafür steht schon.
 
 ### MCP-Host (`app/mcp/`)
 
@@ -131,7 +152,8 @@ user     <kontext> Uhrzeit · Freigabe-Modus · Steckbriefe erwähnter Entitäte
 
 ## Nächste Schritte
 
-- **Eigene UI:** Eine eigene API mit Chats im Harness (als Baum) und typisierten Events (`message.delta`, `tool.started`, `approval.required` …). Darauf eine Oberfläche mit Chat, Memory-Verwaltung, MCP-Status und Freigabe-Buttons. Der OpenAI-Endpunkt bleibt als Adapter für Open WebUI.
+- PDF/Word-Anhänge (Text extrahieren), Spracheingabe
+- Native Hülle (z. B. Tauri) mit Menüleisten-Icon und globalem Tastenkürzel
 - Bilder aus MCP-Ergebnissen über die Responses API weiterreichen.
 - OAuth für Remote-MCP-Server.
 - MCP-Prompts als Slash-Befehle, MCP-Ressourcen per @-Erwähnung.

@@ -1,5 +1,5 @@
-# Standard-Setup: Harness läuft nativ auf dem Mac (scripts/macos/install.sh),
-# hier läuft nur Open WebUI.
+# Optional. Die eigene App braucht kein Docker (scripts/macos/install.sh).
+# Wer zusätzlich Open WebUI nutzen will, startet es hier – der Harness läuft nativ auf dem Mac.
 #
 #   docker compose up -d
 #

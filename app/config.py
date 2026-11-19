@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     extraction_max_chars: int = 16000
     json_mode: bool = True  # response_format=json_object für Hintergrundaufgaben
 
+    # Gebaute Web-App (web/dist), wird unter / ausgeliefert
+    web_dir: str = "./web/dist"
+
     # Obsidian-/Markdown-Export (leer = deaktiviert)
     export_dir: str = ""
 

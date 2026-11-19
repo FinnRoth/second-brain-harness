@@ -15,7 +15,10 @@ if [[ -z "$UV" ]]; then
   echo "❌ uv nicht gefunden. Installieren mit:  brew install uv" >&2
   exit 1
 fi
-command -v npx >/dev/null || echo "⚠️  npx nicht gefunden – für Node-basierte MCP-Server: brew install node"
+if ! command -v npm >/dev/null; then
+  echo "❌ node/npm nicht gefunden (wird für die App und Node-basierte MCP-Server gebraucht):  brew install node" >&2
+  exit 1
+fi
 
 cd "$REPO"
 [[ -f .env ]] || { cp .env.example .env; echo "📝 .env angelegt – bitte LiteLLM-URL/Key etc. eintragen."; }
@@ -28,6 +31,9 @@ fi
 
 echo "📦 Abhängigkeiten installieren …"
 "$UV" sync --quiet
+
+echo "🎨 App bauen …"
+(cd web && npm ci --no-audit --no-fund --silent && npm run build --silent)
 
 mkdir -p "$LOG_DIR" "$HOME/Library/LaunchAgents"
 # PATH der aktuellen Shell übernehmen, damit npx/uvx/node/git in MCP-Servern gefunden werden
@@ -62,7 +68,13 @@ PLIST
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 
-echo "✅ Harness läuft auf http://$HOST:$PORT  (Admin/Doku: http://localhost:$PORT/docs)"
+for _ in $(seq 1 30); do curl -fs "http://localhost:$PORT/health" >/dev/null 2>&1 && break; sleep 1; done
+
+echo "✅ Second Brain läuft:  http://localhost:$PORT"
+echo "   Als App installieren: in Safari „Ablage → Zum Dock hinzufügen“ (oder in Chrome: Installieren-Symbol in der Adresszeile)"
+echo "   API-Doku:  http://localhost:$PORT/docs"
 echo "   Logs:      tail -f $LOG_DIR/harness.log"
 echo "   Neustart:  launchctl kickstart -k gui/$(id -u)/$LABEL"
+echo "   Update:    git pull && scripts/macos/install.sh"
 echo "   Entfernen: scripts/macos/uninstall.sh"
+open "http://localhost:$PORT" 2>/dev/null || true

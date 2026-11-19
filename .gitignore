@@ -7,3 +7,5 @@ vault/
 .pytest_cache/
 config/mcp.json
 config/secrets.env
+web/node_modules/
+web/dist/

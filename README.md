@@ -1,9 +1,9 @@
-# Second Brain Harness
+# Second Brain
 
-Ein Backend für einen persönlichen KI-Assistenten mit **Langzeitgedächtnis im ChatGPT-Stil** und **MCP-Tools wie in Claude Code**. Es ist an deine **eigene LiteLLM-API** angebunden, und alle Daten bleiben lokal.
+Ein persönlicher KI-Assistent als **Mac-App** mit **Langzeitgedächtnis im ChatGPT-Stil** und **MCP-Tools wie in Claude Code**. Er ist an deine **eigene LiteLLM-API** angebunden, und alle Daten bleiben lokal.
 
 ```
-Open WebUI (Docker) ──(OpenAI-API)──▶ Harness (nativ auf dem Mac) ──▶ LiteLLM ──▶ GPT / Claude / …
+Second-Brain-App (Fenster/Dock) ──▶ Harness (Hintergrunddienst auf dem Mac) ──▶ LiteLLM ──▶ GPT / Claude / …
                                          │
                        ┌─────────────────┼──────────────────────┐
                  Gedächtnis (SQLite)   MCP-Server             Obsidian-Vault
@@ -14,8 +14,8 @@ Open WebUI (Docker) ──(OpenAI-API)──▶ Harness (nativ auf dem Mac) ─�
 - **Erinnert sich wie ChatGPT:** In jedem Chat stehen eine Memory-Zusammenfassung über dich (inkl. Antwort-Präferenzen), gespeicherte Erinnerungen und deine letzten Gespräche. Dazu kommen pro Nachricht Steckbriefe erwähnter Personen und Projekte.
 - **Lernt im Hintergrund ("Dreaming"):** Nach ein paar Minuten Ruhe wird ein Chat als Ganzes verarbeitet und das Wissen aufgeräumt.
 - **Ist strukturiert:** Personen, Projekte (Arbeit/privat), Organisationen, Ideen, Strategien und Ziele mit Beziehungen und Historie.
-- **Bindet MCP-Server an wie Claude Code:** Server werden einfach per Befehl gestartet (`npx …`, `uvx --from git+…`), ohne Repo-Klonen und ohne URL-Freigabe. Remote-Server laufen über HTTP.
-- **Hat Freigabe-Modi** wie Claude Code: `plan`, `ask` und `auto`.
+- **Bindet MCP-Server an wie Claude Code:** Server werden per Befehl gestartet (`npx …`, `uvx --from git+…`), ohne Repo-Klonen und ohne URL-Freigabe.
+- **Fragt per Button nach**, bevor etwas verändert wird. Es gibt drei Modi wie in Claude Code: Planen, Fragen, Auto.
 
 Der Aufbau ist in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) beschrieben.
 
@@ -23,7 +23,11 @@ Der Aufbau ist in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) beschrieben.
 
 ## Installation auf dem Mac
 
-Voraussetzungen: [uv](https://docs.astral.sh/uv/) (`brew install uv`), für Node-basierte MCP-Server `node` (`brew install node`) und Docker Desktop für Open WebUI.
+Voraussetzungen: [uv](https://docs.astral.sh/uv/) und Node (für die App und Node-basierte MCP-Server).
+
+```bash
+brew install uv node
+```
 
 ```bash
 scripts/macos/install.sh
@@ -32,44 +36,79 @@ scripts/macos/install.sh
 Das Skript:
 
 - legt `.env`, `config/mcp.json` und `config/secrets.env` an (falls sie fehlen),
-- installiert die Abhängigkeiten,
+- installiert die Abhängigkeiten und **baut die App**,
 - richtet den Harness als **Hintergrunddienst** (LaunchAgent) ein. Er startet beim Login automatisch und nach einem Absturz neu.
+- öffnet zum Schluss die App unter http://localhost:8100.
 
-Danach `.env` ausfüllen: mindestens `LITELLM_BASE_URL`, `LITELLM_API_KEY`, `CHAT_MODELS`, `HARNESS_API_KEY` und `USER_NAME`. Anschließend den Dienst neu starten:
+Danach `.env` ausfüllen: mindestens `LITELLM_BASE_URL`, `LITELLM_API_KEY`, `CHAT_MODELS` und `USER_NAME`. Dann neu starten:
 
 ```bash
 launchctl kickstart -k gui/$(id -u)/com.secondbrain.harness
 ```
 
-Dann Open WebUI starten (der `HARNESS_API_KEY` wird aus `.env` übernommen):
+**Als App ins Dock holen:** http://localhost:8100 in Safari öffnen und **Ablage → Zum Dock hinzufügen** wählen (in Chrome: Installieren-Symbol in der Adresszeile). Second Brain läuft dann in einem eigenen Fenster mit Icon. Docker brauchst du dafür nicht.
+
+- **Update:** `git pull`, danach `scripts/macos/install.sh`
+- **Logs:** `~/Library/Logs/SecondBrain/harness.log`
+- **API-Doku:** http://localhost:8100/docs
+
+`HARNESS_API_KEY` ist optional. Der Harness hört nur auf `localhost`. Setzt du einen Key, fragt die App einmal danach.
+
+---
+
+## Die App
+
+- **Chats** werden in der Seitenleiste nach Datum gruppiert. Du kannst sie durchsuchen, anheften, umbenennen und löschen. Titel entstehen automatisch.
+- **Antworten** werden gestreamt, mit Markdown, Tabellen und Code samt Kopieren-Knopf. Reasoning-Modelle zeigen einen einklappbaren **Denkprozess**.
+- **Tool-Karten** zeigen, was gerade passiert, etwa "Gedächtnis durchsucht" oder "notes · add_note". Aufgeklappt siehst du Eingabe und Ergebnis.
+- **Freigaben:** Bei Aktionen, die etwas verändern, erscheint eine Karte mit diesen Buttons:
+  - **Erlauben**
+  - **In diesem Chat immer**
+  - **Immer erlauben**
+  - **Ablehnen**
+- **Modus** (unten im Eingabefeld):
+  - **Planen:** nur lesen und planen
+  - **Fragen:** Änderungen nach deiner Freigabe (Standard)
+  - **Auto:** alles ohne Rückfrage
+
+  Der Modus gilt pro Chat.
+- **Modell** und **Denkaufwand** wählst du ebenfalls im Eingabefeld.
+- **Inkognito** (oben rechts bei einem neuen Chat): Der Assistent kennt dich, aber nichts aus dem Chat wird gespeichert.
+- **Bearbeiten und Neu generieren:** Eine frühere Nachricht kannst du ändern und von dort aus neu fragen.
+- **Stopp:** Der bisher erzeugte Teil der Antwort bleibt erhalten.
+- **Anhänge:** Bilder und Textdateien (Markdown, Code, CSV, JSON …) per Klick, Drag & Drop oder Einfügen. PDF/Word folgen.
+- **Läuft im Hintergrund weiter:** Fenster zu oder neu geladen? Die Antwort läuft weiter und erscheint wieder, sobald du zurück bist.
+- **Gedächtnis-Seite:**
+  - Zusammenfassung ansehen und bearbeiten
+  - gespeicherte Erinnerungen verwalten
+  - Personen, Projekte, Ideen usw. mit allen Fakten und deren Historie durchstöbern
+- **Tools & MCP:** Status, Logs und Neustart der MCP-Server. Pro Tool kannst du festlegen: Immer erlauben, Immer fragen oder Blockieren.
+
+Tastenkürzel: `⌘⇧O` öffnet einen neuen Chat, `⌘\` blendet die Seitenleiste ein und aus. Mit `Enter` sendest du, mit `Shift+Enter` beginnt eine neue Zeile.
+
+<details>
+<summary>Optional: Open WebUI weiter nutzen</summary>
+
+Der Harness bietet weiterhin eine OpenAI-kompatible API unter `/v1`. Dort erscheinen die Modelle `brain/<modell>` und `incognito/<modell>`. Chats aus Open WebUI tauchen auch in der App auf und lassen sich dort fortsetzen. Freigaben laufen in Open WebUI per Antwort ("ok" / "nein"), der Modus wird per `/plan`, `/ask` oder `/auto` am Anfang einer Nachricht gewechselt.
 
 ```bash
 docker compose up -d
 ```
 
-- Open WebUI: http://localhost:3000
-- Harness-Admin-API (Swagger): http://localhost:8100/docs
-- Logs: `~/Library/Logs/SecondBrain/harness.log`
+Damit läuft Open WebUI unter http://localhost:3000. Setz in diesem Fall einen `HARNESS_API_KEY`.
 
-In Open WebUI erscheinen zwei Modelle:
-
-| Modell | Verhalten |
-|---|---|
-| `brain/<modell>` | Normaler Chat mit Gedächtnis |
-| `incognito/<modell>` | Liest das Gedächtnis, speichert aber **nichts** |
-
-Empfehlung für Open WebUI: Die eingebaute Memory-Funktion ausgeschaltet lassen. Function Calling kann auf "Default" bleiben, weil die Tools im Harness laufen.
+</details>
 
 <details>
 <summary>Alternativen: ohne LaunchAgent / komplett in Docker</summary>
 
-Manuell im Terminal starten:
+Manuell starten (vorher die App bauen: `cd web && npm ci && npm run build`):
 
 ```bash
 uv run uvicorn app.main:app --port 8100
 ```
 
-Komplett in Docker: MCP-Server laufen dann im Container und kommen nicht an Mac-Apps heran. Ordner müssen gemountet werden.
+Komplett in Docker: MCP-Server laufen dann im Container und kommen nicht an Mac-Apps heran.
 
 ```bash
 HARNESS_URL=http://harness:8000/v1 docker compose --profile docker up -d --build
@@ -160,10 +199,10 @@ MCP-Server kommen in `config/mcp.json` und stehen dort im **selben Format wie in
 | Modus | Lesende Tools | Verändernde Tools |
 |---|---|---|
 | `plan` | ✅ sofort | ❌ nicht verfügbar. Der Assistent plant nur. |
-| `ask` (Standard) | ✅ sofort | ⏸️ wird vorgemerkt. Du antwortest **"ok"** zum Ausführen oder **"nein"** zum Verwerfen. |
+| `ask` (Standard) | ✅ sofort | ⏸️ Freigabe per Button (in Open WebUI per "ok" / "nein") |
 | `auto` | ✅ sofort | ✅ sofort |
 
-- **Modus wechseln:** Schreib `/plan`, `/ask` oder `/auto` an den Anfang einer Nachricht. Der Modus gilt dann für diesen Chat, zum Beispiel `/plan Wie strukturiere ich meinen Vault um?`.
+- **Modus wechseln:** In der App über den Schalter im Eingabefeld. In Open WebUI schreibst du `/plan`, `/ask` oder `/auto` an den Anfang einer Nachricht. Der Modus gilt jeweils für diesen Chat.
 - **Was als lesend gilt:** Ein Tool gilt als lesend, wenn der Server es so markiert (`readOnlyHint`) oder du es in `"readOnly"` einträgst.
 - **Regeln aus der Config gehen immer vor:** `deny` blendet ein Tool aus, `ask` fragt immer nach, `allow` erlaubt ohne Rückfrage.
 - **Gedächtnis-Tools** sind in allen Modi erlaubt.
@@ -172,7 +211,7 @@ MCP-Server kommen in `config/mcp.json` und stehen dort im **selben Format wie in
 
 ## Reasoning-Modelle und Responses API
 
-Manche Modelle (z. B. neuere GPT-Modelle über Azure) lehnen Tools zusammen mit `reasoning_effort` auf `/v1/chat/completions` ab. Der Harness wechselt dann **automatisch** auf `/v1/responses`. Dort gehen Tools und Reasoning gleichzeitig, und eine Zusammenfassung des Reasonings erscheint in Open WebUI als Denkprozess. Es wird nichts beim Anbieter gespeichert (`store: false`).
+Manche Modelle (z. B. neuere GPT-Modelle über Azure) lehnen Tools zusammen mit `reasoning_effort` auf `/v1/chat/completions` ab. Der Harness wechselt dann **automatisch** auf `/v1/responses`. Dort gehen Tools und Reasoning gleichzeitig, und eine Zusammenfassung des Reasonings erscheint in der App als Denkprozess. Es wird nichts beim Anbieter gespeichert (`store: false`).
 
 Einstellungen dafür: `UPSTREAM_API=responses` (immer), `RESPONSES_MODELS=…` (nur bestimmte Modelle) und `REASONING_TOOLS_CONFLICT` (Verhalten im Konfliktfall).
 
@@ -200,6 +239,12 @@ uv sync
 
 ```bash
 uv run pytest
+```
+
+Die App mit Hot-Reload entwickeln. Dafür muss der Harness auf `:8100` laufen, die App ist dann unter http://localhost:5173 erreichbar:
+
+```bash
+cd web && npm install && npm run dev
 ```
 
 Die Prompts liegen in `app/prompts/*.md` und lassen sich über `PROMPTS_DIR` durch eigene Versionen ersetzen.
