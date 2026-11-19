@@ -147,6 +147,31 @@ MIGRATIONS: list[str] = [
         VALUES (new.id, new.user_message, new.assistant_message);
     END;
     """,
+    # --- v2: Memory v2 (gespeicherte Erinnerungen, Dreaming) + Freigaben -------
+    """
+    ALTER TABLE facts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+    CREATE INDEX idx_facts_pinned ON facts(pinned, status);
+    ALTER TABLE conversations ADD COLUMN permission_mode TEXT;
+    ALTER TABLE conversations ADD COLUMN dreamed_at TEXT;
+
+    CREATE TABLE meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+
+    CREATE TABLE approvals (
+        id              INTEGER PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        tool_name       TEXT NOT NULL,
+        arguments       TEXT NOT NULL DEFAULT '{}',
+        description     TEXT NOT NULL DEFAULT '',
+        status          TEXT NOT NULL DEFAULT 'pending',
+        result          TEXT,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    );
+    CREATE INDEX idx_approvals_conv ON approvals(conversation_id, status);
+    """,
 ]
 
 

@@ -40,12 +40,16 @@ async def test_streaming_injects_memory_and_stores_turn(services, client, fake_l
 
     sent = seen["payload"]
     assert sent["model"] == "gpt-5"
-    assert "Data Engineer bei Contoso" in sent["messages"][0]["content"]
+    # Fakten stehen im <kontext>-Block vor der aktuellen Nachricht, nicht im (cachebaren) Systemprompt
+    assert "Data Engineer bei Contoso" in sent["messages"][-1]["content"]
+    assert sent["messages"][-1]["content"].startswith("<kontext")
+    assert sent["messages"][-1]["content"].endswith("Hi, wie läuft es so bei der Arbeit bei Contoso?")
+    assert "Data Engineer" not in sent["messages"][0]["content"]
     assert {t["function"]["name"] for t in sent["tools"]} >= {"search_memory", "remember"}
 
     turns = store.turns_for_conversation("chat-1")
     assert turns[0]["assistant_message"] == "Hallo Alex! Wie läuft es bei Contoso?"
-    assert [j["type"] for j in store.list_jobs(status="pending")] == ["summarize_conversation", "extract_turn"]
+    assert [j["type"] for j in store.list_jobs(status="pending")] == ["dream_conversation"]
 
 
 async def test_tool_loop_streaming(services, client, fake_llm: FakeLLM):

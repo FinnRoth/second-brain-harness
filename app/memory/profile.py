@@ -18,11 +18,16 @@ log = logging.getLogger(__name__)
 
 
 class ProfileBuilder:
-    def __init__(self, store: MemoryStore, llm: LLM, settings: Settings, max_words: int = 450) -> None:
+    """Baut die Memory-Zusammenfassung (früher „Kernprofil“), die in jedem Chat steht."""
+
+    def __init__(self, store: MemoryStore, llm: LLM, settings: Settings) -> None:
         self.store = store
         self.llm = llm
         self.settings = settings
-        self.max_words = max_words
+
+    @property
+    def max_words(self) -> int:
+        return self.settings.summary_max_words
 
     def _material(self) -> str:
         out = [f"Heute: {today_str(self.settings)}"]
@@ -31,11 +36,23 @@ class ProfileBuilder:
         if me:
             out.append(f"## {me['name']} (Nutzer)\n{me['summary']}\n{json.dumps(me['attributes'], ensure_ascii=False)}")
 
+        prefs = [f for f in self.store.list_facts(limit=10000) if f["category"] == "antwortstil"]
+        if prefs:
+            out.append(
+                "## Beobachtete Antwort-Präferenzen (neueste zuerst)\n"
+                + "\n".join(f"- ({f['created_at'][:10]}) {f['content']}" for f in prefs[:40])
+            )
+
         facts = self.store.list_facts(order="importance", min_importance=2, limit=300)
         lines = []
         for f in facts:
+            if f["category"] == "antwortstil":
+                continue
             ents = ", ".join(e["name"] for e in f["entities"])
-            lines.append(f"- [imp {f['importance']}, {f['category']}, {f['created_at'][:10]}] {f['content']} ({ents})")
+            pin = ", gemerkt" if f["pinned"] else ""
+            lines.append(
+                f"- [imp {f['importance']}{pin}, {f['category']}, {f['created_at'][:10]}] {f['content']} ({ents})"
+            )
         out.append("## Fakten (nach Wichtigkeit)\n" + "\n".join(lines))
 
         counts = self.store.entity_fact_counts()
@@ -66,7 +83,7 @@ class ProfileBuilder:
         content = message_content(resp).strip()
         if content:
             self.store.set_profile(content)
-            log.info("Profil neu erstellt (%d Zeichen)", len(content))
+            log.info("Memory-Zusammenfassung neu erstellt (%d Zeichen)", len(content))
         return content
 
 

@@ -83,7 +83,7 @@ async def test_worker_runs_profile_and_export(services, fake_llm, settings):
 
     def background(payload):
         system = payload["messages"][0]["content"]
-        if "Kernprofil" in system:
+        if "Du pflegst die Memory-Zusammenfassung" in system:
             return {"content": "### Person & Lebenssituation\n- Alex wohnt in Hamburg"}
         if "zusammen, damit" in system:
             return {"content": json.dumps({"title": "Umzug", "summary": "Es ging um den Umzug."})}
@@ -93,9 +93,8 @@ async def test_worker_runs_profile_and_export(services, fake_llm, settings):
 
     fake_llm.background = background
     store.upsert_conversation("c1", "brain")
-    turn = store.upsert_turn("c1", 1, "Ich wohne jetzt in Hamburg", "Schön!", "gpt-5")
-    store.enqueue_job("extract_turn", {"turn_id": turn})
-    store.enqueue_job("summarize_conversation", {"conversation_id": "c1"})
+    store.upsert_turn("c1", 1, "Ich wohne jetzt in Hamburg", "Schön!", "gpt-5")
+    store.enqueue_job("dream_conversation", {"conversation_id": "c1"})
     await services.worker.drain()
 
     assert "Hamburg" in store.get_profile()["content"]

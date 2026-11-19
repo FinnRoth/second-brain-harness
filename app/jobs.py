@@ -24,7 +24,9 @@ class Worker:
         self._wake = asyncio.Event()
         self._stopping = False
         self.handlers: dict[str, Callable[..., Awaitable[Any]]] = {
-            "extract_turn": self._extract_turn,
+            "dream_conversation": self._dream_conversation,
+            "consolidate_entity": self._consolidate_entity,
+            "extract_turn": self._extract_turn,  # Altbestand aus v1
             "rebuild_profile": self._rebuild_profile,
             "summarize_conversation": self._summarize,
             "index_embeddings": self._index,
@@ -103,6 +105,27 @@ class Worker:
     def _schedule_export(self) -> None:
         if self.s.exporter.enabled:
             self.s.store.enqueue_job("export_vault", delay_seconds=15, dedupe_key="export")
+
+    async def _dream_conversation(self, conversation_id: str) -> None:
+        """Dreaming: Chat nach Inaktivität verarbeiten – lernen, zusammenfassen, aufräumen."""
+        s = self.s
+        result = await s.extractor.process_conversation(conversation_id)
+        if s.store.turns_for_conversation(conversation_id, limit=1):
+            await s.summarizer.summarize(conversation_id)
+        s.store.mark_conversation_dreamed(conversation_id)
+        await s.indexer.index_pending()
+        self._after_memory_change(result.change_count)
+        for eid in result.touched_entities:
+            if s.consolidator.needs_consolidation(eid):
+                s.store.enqueue_job(
+                    "consolidate_entity", {"entity_id": eid}, delay_seconds=30, dedupe_key=f"consolidate:{eid}"
+                )
+        self._schedule_export()
+
+    async def _consolidate_entity(self, entity_id: int) -> None:
+        stats = await self.s.consolidator.consolidate(entity_id)
+        await self.s.indexer.index_pending()
+        self._after_memory_change(sum(stats.values()) if stats else 0)
 
     async def _extract_turn(self, turn_id: int) -> None:
         result = await self.s.extractor.process_turn(turn_id)

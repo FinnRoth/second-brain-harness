@@ -7,13 +7,9 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, AsyncIterator
-from zoneinfo import ZoneInfo
 
-from .. import prompts
 from ..llm import UpstreamError
-from ..memory.extraction import today_str
 from ..memory.retrieval import text_of
 from ..openwebui import activity_block, conversation_id, strip_activity
 from ..responses_api import RAW_KEY, strip_private
@@ -126,25 +122,20 @@ class ChatSession:
 
     # ---------------------------------------------------------------- Vorbereitung
     async def prepare(self) -> None:
-        ctx = await self.s.retriever.build_context(self.incoming)
-        profile = self.s.store.get_profile().get("content") or "_Noch kein Profil vorhanden – es entsteht mit der Zeit aus euren Gesprächen._"
-        now = datetime.now(ZoneInfo(self.settings.timezone))
-        now_str = f"{today_str(self.settings)}, {now:%H:%M} Uhr"
-        mode_hint = ""
+        mode_hints = []
         if self.mode == "incognito":
-            mode_hint = (
-                "- Dies ist ein **Inkognito-Chat**: Nichts aus diesem Gespräch wird gespeichert. "
-                "Du kannst das Gedächtnis lesen, aber nicht verändern.\n"
+            mode_hints.append(
+                "Dies ist ein **Inkognito-Chat**: Nichts aus diesem Gespräch wird gespeichert. "
+                "Du kannst das Gedächtnis lesen, aber nicht verändern."
             )
-        system = prompts.render(
-            "system",
-            user_name=self.settings.user_name,
-            now=now_str,
-            profile=profile,
-            memories=ctx.text or "_Keine passenden Erinnerungen gefunden._",
-            mode_hint=mode_hint,
-        )
-        self.messages = [{"role": "system", "content": system}, *self.incoming]
+        pb = self.s.prompt_builder
+        system, saved_ids = pb.system_prompt(self.conversation_id, mode_hints)
+        ctx = await pb.turn_context(self.incoming, exclude_fact_ids=saved_ids)
+        self.messages = [{"role": "system", "content": system}, *pb.inject(self.incoming, ctx.text)]
+        if self.turn_index == 1 and self.mode != "incognito":
+            # Neuer Chat: ausstehendes Dreaming anderer Chats vorziehen, damit es bald im Gedächtnis ist
+            if self.s.store.expedite_jobs("dream_conversation", exclude_dedupe_key=f"dream:{self.conversation_id}"):
+                self.s.worker.notify()
         if (
             not self.use_responses
             and self.upstream_model in self.s.tool_reasoning_conflicts
@@ -417,7 +408,7 @@ class ChatSession:
         store = self.s.store
         try:
             store.upsert_conversation(self.conversation_id, self.mode)
-            turn_id = store.upsert_turn(
+            store.upsert_turn(
                 self.conversation_id,
                 self.turn_index,
                 user_text,
@@ -425,12 +416,12 @@ class ChatSession:
                 self.upstream_model,
                 self.tool_log,
             )
-            store.enqueue_job("extract_turn", {"turn_id": turn_id}, dedupe_key=f"turn:{turn_id}")
+            # Dreaming nach Inaktivität (jede neue Nachricht schiebt den Zeitpunkt nach hinten)
             store.enqueue_job(
-                "summarize_conversation",
+                "dream_conversation",
                 {"conversation_id": self.conversation_id},
-                delay_seconds=self.settings.summary_idle_minutes * 60,
-                dedupe_key=f"summary:{self.conversation_id}",
+                delay_seconds=self.settings.dream_idle_minutes * 60,
+                dedupe_key=f"dream:{self.conversation_id}",
             )
             if self.executor.wrote:
                 store.enqueue_job("index_embeddings", {"changes": 1}, dedupe_key="index")

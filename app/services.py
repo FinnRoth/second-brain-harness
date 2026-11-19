@@ -8,6 +8,8 @@ from .config import Settings
 from .db import Database
 from .jobs import Worker
 from .llm import LLM, LiteLLMClient
+from .memory.consolidation import EntityConsolidator
+from .memory.context import PromptBuilder
 from .memory.embeddings import Embedder
 from .memory.export import VaultExporter
 from .memory.extraction import Extractor
@@ -31,6 +33,8 @@ class Services:
         self.extractor = Extractor(self.store, self.llm, self.retriever, settings)
         self.indexer = Indexer(self.store, self.embedder)
         self.profile = ProfileBuilder(self.store, self.llm, settings)
+        self.consolidator = EntityConsolidator(self.store, self.llm, settings)
+        self.prompt_builder = PromptBuilder(self.store, self.retriever, settings)
         self.summarizer = ConversationSummarizer(self.store, self.llm, self.embedder, settings)
         self.exporter = VaultExporter(self.store, settings.export_dir)
         self.worker = Worker(self)

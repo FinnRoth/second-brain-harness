@@ -86,6 +86,7 @@ def _fact(row) -> dict[str, Any]:
         "importance": row["importance"],
         "confidence": row["confidence"],
         "status": row["status"],
+        "pinned": bool(row["pinned"]),
         "superseded_by": row["superseded_by"],
         "source_conversation_id": row["source_conversation_id"],
         "source_turn_id": row["source_turn_id"],
@@ -292,12 +293,13 @@ class MemoryStore:
         confidence: float = 1.0,
         source_conversation_id: str | None = None,
         source_turn_id: int | None = None,
+        pinned: bool = False,
     ) -> int:
         now = utcnow()
         with self.db.transaction():
             cur = self.db.execute(
                 "INSERT INTO facts (content, category, importance, confidence, source_conversation_id,"
-                " source_turn_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                " source_turn_id, pinned, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     content.strip(),
                     (category or "sonstiges").strip().lower(),
@@ -305,6 +307,7 @@ class MemoryStore:
                     confidence,
                     source_conversation_id,
                     source_turn_id,
+                    1 if pinned else 0,
                     now,
                     now,
                 ),
@@ -339,6 +342,7 @@ class MemoryStore:
                 importance=importance if importance is not None else old["importance"],
                 source_conversation_id=source_conversation_id,
                 source_turn_id=source_turn_id,
+                pinned=old["pinned"],
             )
             self.db.execute(
                 "UPDATE facts SET status='superseded', superseded_by=?, updated_at=? WHERE id=?",
@@ -459,6 +463,22 @@ class MemoryStore:
         except Exception:
             return []
         return [(r["id"], r["score"]) for r in rows]
+
+    def pinned_facts(self) -> list[dict[str, Any]]:
+        """Gespeicherte Erinnerungen (explizit gemerkt), wichtigste/neueste zuerst."""
+        rows = self.db.query(
+            "SELECT * FROM facts WHERE pinned=1 AND status='active' ORDER BY importance DESC, created_at DESC"
+        )
+        return self._attach_entities([_fact(r) for r in rows])
+
+    def set_pinned(self, fact_id: int, pinned: bool) -> bool:
+        return (
+            self.db.execute(
+                "UPDATE facts SET pinned=?, updated_at=? WHERE id=? AND status='active'",
+                (1 if pinned else 0, utcnow(), fact_id),
+            ).rowcount
+            > 0
+        )
 
     def find_duplicate_fact(self, content: str) -> int | None:
         """Aktiver Fakt mit (normalisiert) identischem Inhalt – Schutz vor Dubletten."""
@@ -586,6 +606,51 @@ class MemoryStore:
         params.append(limit)
         return [dict(r) for r in reversed(self.db.query(sql, tuple(params)))]
 
+    def unextracted_turns(self, conversation_id: str) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT * FROM turns WHERE conversation_id=? AND extracted_at IS NULL ORDER BY turn_index",
+            (conversation_id,),
+        )
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["tool_log"] = _loads(d["tool_log"], [])
+            out.append(d)
+        return out
+
+    def mark_conversation_dreamed(self, conversation_id: str) -> None:
+        self.db.execute("UPDATE conversations SET dreamed_at=? WHERE id=?", (utcnow(), conversation_id))
+
+    def recent_conversations(
+        self, exclude_id: str | None = None, limit: int = 25, messages_per_chat: int = 3
+    ) -> list[dict[str, Any]]:
+        """Letzte Chats für den Prompt – wie bei ChatGPT nur mit den Nachrichten des Nutzers."""
+        rows = self.db.query(
+            "SELECT id, title, summary, created_at, updated_at FROM conversations"
+            " WHERE mode='brain' AND id != ? ORDER BY updated_at DESC LIMIT ?",
+            (exclude_id or "", limit),
+        )
+        out = []
+        for r in rows:
+            msgs = self.db.query(
+                "SELECT user_message FROM turns WHERE conversation_id=? ORDER BY turn_index LIMIT ?",
+                (r["id"], messages_per_chat),
+            )
+            out.append({**dict(r), "user_messages": [m["user_message"] for m in msgs]})
+        return out
+
+    def last_activity(self, exclude_id: str | None = None) -> str | None:
+        return self.db.scalar(
+            "SELECT MAX(updated_at) FROM conversations WHERE mode='brain' AND id != ?", (exclude_id or "",)
+        )
+
+    def get_permission_mode(self, conversation_id: str) -> str | None:
+        return self.db.scalar("SELECT permission_mode FROM conversations WHERE id=?", (conversation_id,))
+
+    def set_permission_mode(self, conversation_id: str, mode: str, conv_mode: str = "brain") -> None:
+        self.upsert_conversation(conversation_id, conv_mode)
+        self.db.execute("UPDATE conversations SET permission_mode=? WHERE id=?", (mode, conversation_id))
+
     def mark_turn_extracted(self, turn_id: int) -> None:
         self.db.execute("UPDATE turns SET extracted_at=? WHERE id=?", (utcnow(), turn_id))
 
@@ -659,6 +724,43 @@ class MemoryStore:
         self.db.execute("UPDATE profile SET changes_since_build=changes_since_build+? WHERE id=1", (n,))
         return self.db.scalar("SELECT changes_since_build FROM profile WHERE id=1")
 
+    # --------------------------------------------------------------------- Meta
+    def get_meta(self, key: str, default: str | None = None) -> str | None:
+        value = self.db.scalar("SELECT value FROM meta WHERE key=?", (key,))
+        return value if value is not None else default
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.db.execute(
+            "INSERT INTO meta (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+
+    # ---------------------------------------------------------------- Freigaben
+    def create_approval(self, conversation_id: str, tool_name: str, arguments: dict[str, Any], description: str) -> int:
+        now = utcnow()
+        cur = self.db.execute(
+            "INSERT INTO approvals (conversation_id, tool_name, arguments, description, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?)",
+            (conversation_id, tool_name, json.dumps(arguments, ensure_ascii=False), description, now, now),
+        )
+        return cur.lastrowid
+
+    def pending_approvals(self, conversation_id: str) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT * FROM approvals WHERE conversation_id=? AND status='pending' ORDER BY id", (conversation_id,)
+        )
+        return [{**dict(r), "arguments": _loads(r["arguments"], {})} for r in rows]
+
+    def get_approval(self, approval_id: int) -> dict[str, Any] | None:
+        row = self.db.query_one("SELECT * FROM approvals WHERE id=?", (approval_id,))
+        return {**dict(row), "arguments": _loads(row["arguments"], {})} if row else None
+
+    def resolve_approval(self, approval_id: int, status: str, result: str | None = None) -> None:
+        self.db.execute(
+            "UPDATE approvals SET status=?, result=?, updated_at=? WHERE id=?",
+            (status, result, utcnow(), approval_id),
+        )
+
     # --------------------------------------------------------------------- Jobs
     def enqueue_job(
         self,
@@ -724,6 +826,13 @@ class MemoryStore:
                 "UPDATE jobs SET status='pending', last_error=?, run_after=?, updated_at=? WHERE id=?",
                 (error[:4000], run_after, utcnow(), job_id),
             )
+
+    def expedite_jobs(self, type: str, exclude_dedupe_key: str | None = None) -> int:
+        """Zieht geplante Jobs eines Typs vor (z. B. Dreaming, wenn ein neuer Chat startet)."""
+        return self.db.execute(
+            "UPDATE jobs SET run_after=? WHERE type=? AND status='pending' AND COALESCE(dedupe_key,'')!=?",
+            (utcnow(), type, exclude_dedupe_key or ""),
+        ).rowcount
 
     def reset_running_jobs(self) -> None:
         self.db.execute("UPDATE jobs SET status='pending' WHERE status='running'")

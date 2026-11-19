@@ -152,7 +152,9 @@ class Retriever:
         return scored[:limit]
 
     # ------------------------------------------------------------ Kontext bauen
-    async def build_context(self, messages: list[dict[str, Any]]) -> RetrievedContext:
+    async def build_context(
+        self, messages: list[dict[str, Any]], exclude_fact_ids: set[int] | None = None
+    ) -> RetrievedContext:
         user_msgs = [text_of(m.get("content")) for m in messages if m.get("role") == "user"]
         if not user_msgs:
             return RetrievedContext()
@@ -174,6 +176,8 @@ class Retriever:
         if len(last_user) < 80 and prev_user:  # kurze Rückfragen ("und was meinst du?") brauchen Kontext
             query = prev_user[-1000:] + "\n" + last_user
         facts = await self.search_facts(query, limit=self.settings.max_context_facts, entity_ids=ent_ids[:4])
+        if exclude_fact_ids:  # z. B. gespeicherte Erinnerungen, die ohnehin im Systemprompt stehen
+            facts = [(f, sc) for f, sc in facts if f["id"] not in exclude_fact_ids]
 
         text, used_facts, used_entities = self.render(ent_ids, facts)
         self.store.touch_facts(used_facts)

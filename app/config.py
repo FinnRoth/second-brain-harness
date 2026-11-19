@@ -52,11 +52,19 @@ class Settings(BaseSettings):
     #   prefer_tools     → reasoning_effort=none setzen
     reasoning_tools_conflict: str = "use_responses"
 
-    # Hintergrund-Jobs
+    # Prompt-Aufbau (ChatGPT-Stil)
+    saved_memories_token_budget: int = 1500
+    recent_chats_count: int = 25
+    recent_chats_token_budget: int = 1500
+    summary_max_words: int = 500
+
+    # Hintergrund-Jobs / Dreaming
     enable_worker: bool = True
     worker_poll_seconds: float = 2.0
-    profile_rebuild_every: int = 8  # nach so vielen Gedächtnis-Änderungen wird das Profil neu gebaut
-    summary_idle_minutes: int = 20  # Chat wird nach so viel Inaktivität zusammengefasst
+    profile_rebuild_every: int = 8  # nach so vielen Gedächtnis-Änderungen wird die Zusammenfassung neu gebaut
+    dream_idle_minutes: int = 15  # Chat wird nach so viel Inaktivität verarbeitet („Dreaming“)
+    consolidation_min_facts: int = 8  # ab so vielen Fakten wird eine Entität aufgeräumt
+    consolidation_growth: int = 5  # … und erneut, wenn seitdem so viele dazugekommen sind
     extraction_max_chars: int = 16000
     json_mode: bool = True  # response_format=json_object für Hintergrundaufgaben
 

@@ -75,6 +75,50 @@ async def rebuild_profile(request: Request):
     return {"content": content}
 
 
+@router.get("/summary")
+async def get_summary(request: Request):
+    """Memory-Zusammenfassung (Alias für /memory/profile)."""
+    return get_services(request).store.get_profile()
+
+
+@router.get("/prompt-preview")
+async def prompt_preview(request: Request, message: str = "", conversation_id: str | None = None):
+    """Zeigt, was der Assistent zu einer Nachricht sehen würde: Systemprompt + <kontext>-Block."""
+    s = get_services(request)
+    system, saved_ids = s.prompt_builder.system_prompt(conversation_id)
+    ctx = await s.prompt_builder.turn_context([{"role": "user", "content": message}], saved_ids) if message else None
+    return {"system": system, "context": ctx.text if ctx else None}
+
+
+# ------------------------------------------------- Gespeicherte Erinnerungen
+@router.get("/saved")
+async def list_saved(request: Request):
+    """Gespeicherte Erinnerungen – stehen in jedem Chat im Systemprompt."""
+    return get_services(request).store.pinned_facts()
+
+
+@router.post("/saved", status_code=201)
+async def create_saved(request: Request, body: FactIn):
+    s = get_services(request)
+    fid = s.store.add_fact(body.content, body.entity_ids or [s.store.self_id()], body.category, body.importance, pinned=True)
+    s.store.enqueue_job("index_embeddings", {"changes": 1}, dedupe_key="index")
+    return s.store.get_fact(fid)
+
+
+@router.post("/facts/{fact_id}/pin")
+async def pin_fact(request: Request, fact_id: int):
+    if not get_services(request).store.set_pinned(fact_id, True):
+        raise HTTPException(404, "Nicht gefunden oder nicht aktiv")
+    return {"pinned": fact_id}
+
+
+@router.delete("/facts/{fact_id}/pin")
+async def unpin_fact(request: Request, fact_id: int):
+    if not get_services(request).store.set_pinned(fact_id, False):
+        raise HTTPException(404, "Nicht gefunden oder nicht aktiv")
+    return {"unpinned": fact_id}
+
+
 # ----------------------------------------------------------------- Entitäten
 @router.get("/entities")
 async def list_entities(request: Request, type: str | None = None, status: str | None = None, q: str | None = None):
@@ -120,6 +164,25 @@ async def delete_entity(request: Request, entity_id: int):
     if not get_services(request).store.delete_entity(entity_id):
         raise HTTPException(404, "Nicht gefunden (oder Nutzer-Entität)")
     return {"deleted": entity_id}
+
+
+@router.post("/entities/{entity_id}/consolidate")
+async def consolidate_entity(request: Request, entity_id: int):
+    """Räumt die Fakten einer Entität sofort auf (Dreaming manuell anstoßen)."""
+    s = get_services(request)
+    if not s.store.get_entity(entity_id):
+        raise HTTPException(404, "Nicht gefunden")
+    return await s.consolidator.consolidate(entity_id)
+
+
+@router.post("/conversations/{conversation_id}/dream")
+async def dream_conversation(request: Request, conversation_id: str):
+    """Verarbeitet einen Chat sofort, statt auf die Inaktivitätszeit zu warten."""
+    s = get_services(request)
+    if not s.store.get_conversation(conversation_id):
+        raise HTTPException(404, "Nicht gefunden")
+    await s.worker.handlers["dream_conversation"](conversation_id=conversation_id)
+    return {"ok": True}
 
 
 @router.post("/entities/{keep_id}/merge/{merge_id}")

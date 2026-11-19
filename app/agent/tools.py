@@ -262,6 +262,7 @@ class ToolExecutor:
             category=category,
             importance=importance,
             source_conversation_id=self.conversation_id,
+            pinned=True,  # = „Gespeicherte Erinnerung“, steht ab jetzt in jedem Chat
         )
         self.wrote = True
         return f"Gespeichert als F{fid}."

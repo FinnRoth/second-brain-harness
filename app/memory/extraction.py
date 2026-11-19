@@ -32,6 +32,16 @@ class ExtractionResult:
     superseded_facts: list[tuple[int, int]] = field(default_factory=list)
     deleted_facts: list[int] = field(default_factory=list)
     relations: list[int] = field(default_factory=list)
+    touched_entities: set[int] = field(default_factory=set)
+
+    def merge(self, other: "ExtractionResult") -> None:
+        self.created_entities += other.created_entities
+        self.updated_entities += other.updated_entities
+        self.added_facts += other.added_facts
+        self.superseded_facts += other.superseded_facts
+        self.deleted_facts += other.deleted_facts
+        self.relations += other.relations
+        self.touched_entities |= other.touched_entities
 
     @property
     def change_count(self) -> int:
@@ -65,6 +75,27 @@ class Extractor:
         self.settings = settings
 
     # ------------------------------------------------------------------ Ablauf
+    async def process_conversation(self, conversation_id: str) -> ExtractionResult:
+        """Dreaming: alle noch nicht verarbeiteten Turns eines Chats, in Blöcken."""
+        total = ExtractionResult()
+        conv = self.store.get_conversation(conversation_id)
+        if not conv or conv["mode"] == "incognito":
+            return total
+        pending = self.store.unextracted_turns(conversation_id)
+        budget = self.settings.extraction_max_chars
+        batch: list[dict[str, Any]] = []
+        size = 0
+        for t in pending:
+            t_size = len(t["user_message"]) + min(len(t["assistant_message"]), budget // 2)
+            if batch and size + t_size > budget:
+                total.merge(await self.process_turns(batch))
+                batch, size = [], 0
+            batch.append(t)
+            size += t_size
+        if batch:
+            total.merge(await self.process_turns(batch))
+        return total
+
     async def process_turn(self, turn_id: int) -> ExtractionResult | None:
         turn = self.store.get_turn(turn_id)
         if not turn:
@@ -72,16 +103,18 @@ class Extractor:
         conv = self.store.get_conversation(turn["conversation_id"])
         if conv and conv["mode"] == "incognito":
             return None
+        return await self.process_turns([turn])
 
+    async def process_turns(self, turns: list[dict[str, Any]]) -> ExtractionResult:
+        conversation_id = turns[0]["conversation_id"]
         max_chars = self.settings.extraction_max_chars
-        user_msg = turn["user_message"][:max_chars]
-        assistant_msg = turn["assistant_message"][: max_chars // 2]
-        combined = f"{user_msg}\n{assistant_msg}"
+        user_text = "\n".join(t["user_message"] for t in turns)
+        assistant_text = "\n".join(t["assistant_message"] for t in turns)
 
         # Kandidaten-Entitäten: im Text erkannt + semantisch ähnlich + der Nutzer selbst
         self_id = self.store.self_id()
-        cand_entities = self.retriever.detect_entities(combined, limit=15)
-        for eid in await self.retriever.similar_entities(user_msg, k=8):
+        cand_entities = self.retriever.detect_entities(f"{user_text}\n{assistant_text}"[: max_chars * 2], limit=20)
+        for eid in await self.retriever.similar_entities(user_text[-4000:], k=8):
             if eid not in cand_entities:
                 cand_entities.append(eid)
         if self_id not in cand_entities:
@@ -89,12 +122,9 @@ class Extractor:
 
         # Kandidaten-Fakten: was zu diesem Abschnitt schon bekannt ist
         facts = await self.retriever.search_facts(
-            user_msg[-4000:] + "\n" + assistant_msg[:1500], limit=40, entity_ids=cand_entities[:6]
+            user_text[-4000:] + "\n" + assistant_text[:1500], limit=50, entity_ids=cand_entities[:8]
         )
-
-        prev_turns = self.store.turns_for_conversation(
-            turn["conversation_id"], before_index=turn["turn_index"], limit=2
-        )
+        prev_turns = self.store.turns_for_conversation(conversation_id, before_index=turns[0]["turn_index"], limit=2)
 
         messages = [
             {
@@ -108,9 +138,7 @@ class Extractor:
             },
             {
                 "role": "user",
-                "content": self._build_input(
-                    cand_entities, [f for f, _ in facts], prev_turns, turn, user_msg, assistant_msg
-                ),
+                "content": self._build_input(cand_entities, [f for f, _ in facts], prev_turns, turns),
             },
         ]
         payload: dict[str, Any] = {"model": self.settings.effective_background_model, "messages": messages}
@@ -119,11 +147,13 @@ class Extractor:
         resp = await self.llm.chat(payload)
         data = parse_json_response(message_content(resp))
 
-        result = self.apply(data, conversation_id=turn["conversation_id"], turn_id=turn_id)
-        self.store.mark_turn_extracted(turn_id)
+        result = self.apply(data, conversation_id=conversation_id, turn_id=turns[-1]["id"])
+        for t in turns:
+            self.store.mark_turn_extracted(t["id"])
         log.info(
-            "Turn %s: +%d Fakten, %d ersetzt, %d gelöscht, %d neue Entitäten",
-            turn_id,
+            "Chat %s (%d Turns): +%d Fakten, %d ersetzt, %d gelöscht, %d neue Entitäten",
+            conversation_id,
+            len(turns),
             len(result.added_facts),
             len(result.superseded_facts),
             len(result.deleted_facts),
@@ -136,10 +166,9 @@ class Extractor:
         entity_ids: list[int],
         facts: list[dict[str, Any]],
         prev_turns: list[dict[str, Any]],
-        turn: dict[str, Any],
-        user_msg: str,
-        assistant_msg: str,
+        turns: list[dict[str, Any]],
     ) -> str:
+        max_chars = self.settings.extraction_max_chars
         out = [f"## Heute\n{today_str(self.settings)}"]
 
         ent_lines = []
@@ -162,11 +191,15 @@ class Extractor:
         fact_lines = []
         for f in facts:
             refs = ", ".join(f"E{e['id']}" for e in f["entities"])
-            fact_lines.append(f"- F{f['id']} [{refs}] ({f['created_at'][:10]}) {f['content']}")
+            pin = " [gemerkt]" if f.get("pinned") else ""
+            fact_lines.append(f"- F{f['id']}{pin} [{refs}] ({f['created_at'][:10]}) {f['content']}")
         out.append("## Bestehende Fakten (Auswahl)\n" + ("\n".join(fact_lines) or "(keine)"))
 
         tool_writes = [
-            t for t in turn.get("tool_log") or [] if t.get("name") in {"remember", "forget_fact", "update_entity"}
+            t
+            for turn in turns
+            for t in turn.get("tool_log") or []
+            if t.get("name") in {"remember", "forget_fact", "update_entity"}
         ]
         if tool_writes:
             lines = [f"- {t['name']}: {json.dumps(t.get('arguments'), ensure_ascii=False)}" for t in tool_writes]
@@ -180,7 +213,11 @@ class Extractor:
                 hist.append(f"USER: {t['user_message'][:1500]}\nASSISTENT: {t['assistant_message'][:1000]}")
             out.append("## Vorheriger Verlauf (nur zum Verständnis)\n" + "\n\n".join(hist))
 
-        out.append(f"## Zu analysierender Abschnitt\nUSER: {user_msg}\n\nASSISTENT: {assistant_msg}")
+        section = []
+        per_turn = max(2000, max_chars // max(1, len(turns)))
+        for t in turns:
+            section.append(f"USER: {t['user_message'][:per_turn]}\n\nASSISTENT: {t['assistant_message'][: per_turn // 2]}")
+        out.append("## Zu analysierender Abschnitt\n" + "\n\n---\n\n".join(section))
         return "\n\n".join(out)
 
     # --------------------------------------------------------------- Anwenden
@@ -292,6 +329,7 @@ class Extractor:
                     )
                     if new_id:
                         result.superseded_facts.append((target, new_id))
+                        result.touched_entities |= {e["id"] for e in target_fact["entities"]} | set(entity_ids)
                     continue
                 if not entity_ids:
                     entity_ids = [self_id]
@@ -308,6 +346,7 @@ class Extractor:
                     source_turn_id=turn_id,
                 )
                 result.added_facts.append(fid)
+                result.touched_entities |= set(entity_ids)
 
             # 3) Relationen
             for r in data.get("relations") or []:
