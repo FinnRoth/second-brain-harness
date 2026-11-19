@@ -48,7 +48,8 @@ launchctl kickstart -k gui/$(id -u)/com.secondbrain.harness
 
 **Als App ins Dock holen:** http://localhost:8100 in Safari öffnen und **Ablage → Zum Dock hinzufügen** wählen (in Chrome: Installieren-Symbol in der Adresszeile). Second Brain läuft dann in einem eigenen Fenster mit Icon. Docker brauchst du dafür nicht.
 
-- **Update:** `git pull`, danach `scripts/macos/install.sh`
+- **Update:** `git pull`, danach `scripts/macos/install.sh` (immer **ohne** `sudo`)
+- **Ohne Hintergrunddienst** (z. B. wenn ein verwalteter Firmen-Mac LaunchAgents blockiert): `scripts/macos/run.sh` startet den Harness im Terminal
 - **Logs:** `~/Library/Logs/SecondBrain/harness.log`
 - **API-Doku:** http://localhost:8100/docs
 
