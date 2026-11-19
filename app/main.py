@@ -16,6 +16,8 @@ from .config import Settings, get_settings
 from .llm import LLM
 from .services import Services
 
+VERSION = "0.3.1"
+
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -33,7 +35,7 @@ def create_app(settings: Settings | None = None, llm: LLM | None = None, service
         finally:
             await svc.shutdown()
 
-    app = FastAPI(title="Second Brain Harness", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Second Brain Harness", version=VERSION, lifespan=lifespan)
     if services is not None:  # erlaubt Tests ohne Lifespan
         app.state.services = services
     app.include_router(openai_compat.router)
@@ -43,7 +45,7 @@ def create_app(settings: Settings | None = None, llm: LLM | None = None, service
 
     @app.get("/health")
     async def health():
-        return {"status": "ok"}
+        return {"status": "ok", "app": "second-brain-harness", "version": VERSION}
 
     _mount_web(app, (services.settings if services else settings or get_settings()).web_dir)
     return app

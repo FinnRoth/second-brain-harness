@@ -98,12 +98,29 @@ if ! plutil -lint "$TMP_PLIST" >/dev/null; then
 fi
 
 loaded() { launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; }
+ours() { curl -fs "http://127.0.0.1:$PORT/health" 2>/dev/null | grep -q '"app":"second-brain-harness"'; }
 
 echo "🚀 Hintergrunddienst einrichten …"
 # Alte Version entladen und warten, bis launchd sie wirklich losgelassen hat (bootout ist asynchron)
 if loaded; then
   launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
   for _ in $(seq 1 20); do loaded || break; sleep 0.5; done
+fi
+# Port muss frei sein – sonst antwortet ein anderer Prozess (z. B. ein alter Docker-Container)
+port_busy() { command -v lsof >/dev/null && lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; }
+for _ in $(seq 1 10); do port_busy || break; sleep 0.5; done   # eigener alter Prozess braucht kurz zum Beenden
+if port_busy; then
+  echo "❌ Port $PORT ist belegt von:" >&2
+  lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >&2 || true
+  if command -v docker >/dev/null && docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | grep -q ":$PORT->"; then
+    echo "" >&2
+    echo "   Das ist ein Docker-Container (vermutlich der alte Harness aus dem Docker-Setup):" >&2
+    docker ps --format '   • {{.Names}} ({{.Image}}) {{.Ports}}' | grep ":$PORT->" >&2 || true
+    echo "   Stoppen und entfernen mit:  docker rm -f second-brain-harness" >&2
+  fi
+  echo "   Danach erneut:  scripts/macos/install.sh   (oder anderen Port: PORT=8200 scripts/macos/install.sh)" >&2
+  rm -f "$TMP_PLIST"
+  exit 1
 fi
 mv -f "$TMP_PLIST" "$PLIST"
 chmod 644 "$PLIST"
@@ -134,12 +151,12 @@ fi
 
 printf "⏳ Warte auf den Start "
 for _ in $(seq 1 40); do
-  curl -fs "http://localhost:$PORT/health" >/dev/null 2>&1 && break
+  ours && break
   printf "."
   sleep 1
 done
 echo
-if ! curl -fs "http://localhost:$PORT/health" >/dev/null 2>&1; then
+if ! ours; then
   echo "⚠️  Der Dienst ist eingerichtet, antwortet aber noch nicht. Letzte Log-Zeilen:"
   tail -n 25 "$LOG_DIR/harness.log" 2>/dev/null || true
   exit 1
