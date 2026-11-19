@@ -1,38 +1,57 @@
+# Standard-Setup: Harness läuft nativ auf dem Mac (scripts/macos/install.sh),
+# hier läuft nur Open WebUI.
+#
+#   docker compose up -d
+#
+# Alternativ alles in Docker (MCP-Server laufen dann im Container, ohne Zugriff
+# auf Mac-Apps; Ordner müssen gemountet werden):
+#
+#   HARNESS_URL=http://harness:8000/v1 docker compose --profile docker up -d --build
+
 services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    ports:
+      - "3000:8080"
+    environment:
+      # Gilt nur beim allerersten Start; danach in Open WebUI unter
+      # Admin-Einstellungen → Verbindungen änderbar.
+      OPENAI_API_BASE_URL: ${HARNESS_URL:-http://host.docker.internal:8100/v1}
+      OPENAI_API_KEY: ${HARNESS_API_KEY}
+      ENABLE_OLLAMA_API: "false"
+      # Schickt die Chat-ID mit → der Harness kann Chats sauber zuordnen
+      ENABLE_FORWARD_USER_INFO_HEADERS: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - open-webui:/app/backend/data
+    restart: unless-stopped
+
   harness:
+    profiles: ["docker"]
     build: .
     container_name: second-brain-harness
     env_file: .env
     environment:
       DB_PATH: /data/brain.db
       EXPORT_DIR: /vault
+      MCP_CONFIG: /config/mcp.json
+      MCP_SECRETS: /config/secrets.env
+      MCP_LOG_DIR: /data/logs/mcp
     volumes:
-      - ./data:/data     # SQLite-Datenbank (dein Gedächtnis – regelmäßig sichern!)
-      - ./vault:/vault   # Obsidian-Vault (Markdown-Export)
+      - ./data:/data
+      - ./vault:/vault
+      - ./config:/config
+      - mcp-cache:/root/.cache   # npx/uvx-Downloads bleiben erhalten
+      - mcp-npm:/root/.npm
     ports:
-      - "8100:8000"      # Admin-API: http://localhost:8100/docs
+      - "8100:8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: open-webui
-    depends_on:
-      - harness
-    ports:
-      - "3000:8080"
-    environment:
-      # Gilt nur beim allerersten Start; danach in Open WebUI unter
-      # Admin-Einstellungen → Verbindungen änderbar.
-      OPENAI_API_BASE_URL: http://harness:8000/v1
-      OPENAI_API_KEY: ${HARNESS_API_KEY}
-      ENABLE_OLLAMA_API: "false"
-      # Schickt die Chat-ID mit → der Harness kann Chats sauber zuordnen
-      ENABLE_FORWARD_USER_INFO_HEADERS: "true"
-    volumes:
-      - open-webui:/app/backend/data
-    restart: unless-stopped
-
 volumes:
   open-webui:
+  mcp-cache:
+  mcp-npm:

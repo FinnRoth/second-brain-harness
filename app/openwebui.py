@@ -52,6 +52,9 @@ def strip_activity(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def activity_block(lines: list[str]) -> str:
+    """Einklappbare Aktivitätsanzeige (Tool-Aufrufe) für Open WebUI."""
+    if len(lines) == 1:
+        title = lines[0] if not lines[0][:1].isalnum() else f"🧠 {lines[0]}"
+        return f'<details type="memory">\n<summary>{title}</summary>\n</details>\n\n'
     items = "\n".join(f"- {line}" for line in lines)
-    title = lines[0] if len(lines) == 1 else f"{len(lines)} Gedächtnis-Aktionen"
-    return f'<details type="memory">\n<summary>🧠 {title}</summary>\n\n{items}\n</details>\n\n'
+    return f'<details type="memory">\n<summary>⚙️ {len(lines)} Aktionen</summary>\n\n{items}\n</details>\n\n'

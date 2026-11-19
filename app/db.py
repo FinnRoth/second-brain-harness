@@ -182,6 +182,7 @@ def utcnow() -> str:
 class Database:
     def __init__(self, path: str) -> None:
         if path != ":memory:":
+            path = str(Path(path).expanduser())
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.conn.row_factory = sqlite3.Row

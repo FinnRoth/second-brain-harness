@@ -39,7 +39,7 @@ def _yaml_value(v) -> str:
 class VaultExporter:
     def __init__(self, store: MemoryStore, export_dir: str) -> None:
         self.store = store
-        self.root = Path(export_dir) if export_dir else None
+        self.root = Path(export_dir).expanduser() if export_dir else None
 
     @property
     def enabled(self) -> bool:

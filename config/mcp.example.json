@@ -1,0 +1,37 @@
+{
+  "mcpServers": {
+    "obsidian-vault": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "~/Documents/Obsidian"],
+      "tools": { "ask": ["write_file", "edit_file", "move_file", "create_directory"] },
+      "disabled": true
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" },
+      "disabled": true
+    },
+    "eigenes-python-repo": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/DEIN-NAME/dein-mcp-server@main", "dein-mcp-server"],
+      "disabled": true
+    },
+    "eigenes-node-repo": {
+      "command": "npx",
+      "args": ["-y", "github:DEIN-NAME/dein-node-mcp"],
+      "disabled": true
+    },
+    "lokaler-checkout": {
+      "command": "uv",
+      "args": ["run", "--directory", "~/code/mein-mcp", "server.py"],
+      "disabled": true
+    },
+    "remote-beispiel": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ${EXAMPLE_TOKEN}" },
+      "disabled": true
+    }
+  }
+}

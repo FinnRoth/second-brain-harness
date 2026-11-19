@@ -3,87 +3,135 @@
 ## Überblick
 
 ```
-Open WebUI ──(OpenAI-API)──▶ Harness (FastAPI) ──▶ LiteLLM
-                               │
-                     ┌─────────┴───────────────┐
-                     │ 1. Kontext laden          │  vor der Antwort, synchron
-                     │ 2. Agent-Loop mit Tools   │  während der Antwort
-                     │ 3. Lernen                 │  nach der Antwort, Hintergrund-Job
-                     └─────────┬───────────────┘
-                          SQLite (WAL) + FTS5
+Open WebUI ──(OpenAI-API)──▶ app/api/openai_compat.py
+                                   │
+                             ChatSession (app/agent/session.py)
+             ┌─────────────────────┼─────────────────────────────┐
+     PromptBuilder            ToolRegistry                  Upstream
+  (app/memory/context.py)   (app/tools/registry.py)     LiteLLM: Chat Completions
+     │                        │            │             oder Responses API
+  Gedächtnis (SQLite)   MemoryTools    MCPToolProvider    (app/responses_api.py)
+                                           │
+                                       MCPManager ── ServerConnection × n
+                                       (app/mcp)      stdio / HTTP / SSE
+             Worker (app/jobs.py): Dreaming, Konsolidierung, Zusammenfassung, Export
 ```
 
-Der Harness ist ein OpenAI-kompatibler Server (`/v1/models`, `/v1/chat/completions` mit SSE-Streaming). Open WebUI braucht keine Anpassung.
+Alles läuft in **einem Prozess**: API, Hintergrund-Worker, MCP-Host und SQLite. Für den Betrieb ist der Harness als nativer Dienst auf dem Mac (LaunchAgent) vorgesehen. Dadurch laufen MCP-Server direkt auf dem Mac und kommen an Dateien und Apps heran.
 
-## Gedächtnis in drei Schichten
+## Gedächtnis
 
-| Schicht | Inhalt | Wann im Kontext |
-|---|---|---|
-| **Kernprofil** | Kompakte Markdown-Zusammenfassung über den Nutzer (~450 Wörter) | Immer |
-| **Strukturiertes Wissen** | Entitäten, Fakten, Relationen | Automatisch nach Relevanz plus per Tool |
-| **Episodisch** | Alle Chat-Turns im Wortlaut plus Zusammenfassung pro Chat | Per Tool `search_past_chats` |
+### Prompt-Aufbau (ChatGPT-Stil, `app/memory/context.py`)
 
-## Datenmodell (`app/db.py`)
+```
+system   Persona + Datum (+ wann das letzte Gespräch war)
+         ## Memory-Zusammenfassung   ← Dreaming (inkl. Antwort-Präferenzen mit Sicherheitsangabe)
+         ## Gespeicherte Erinnerungen ← gepinnte Fakten, Token-Budget, Rest "im Hintergrund"
+         ## Letzte Gespräche          ← ~25 Chats: Datum, Titel, nur Nutzernachrichten
+         ## Verbundene Tools (MCP)    ← Server + deren Instructions
+…Verlauf…
+user     <kontext> Uhrzeit · Freigabe-Modus · Steckbriefe erwähnter Entitäten ·
+                   relevante Fakten · ggf. Ergebnisse freigegebener Aktionen </kontext>
+         + eigentliche Nachricht
+```
 
-- **entities**: `type` ∈ self, person, project, organization, idea, strategy, goal, life_area, topic. Dazu `name`, `aliases` (JSON), `summary`, `attributes` (JSON, z. B. `bereich`, `status`, `firma`), `status` (active/archived) und `embedding`.
-- **facts**: atomare Aussagen mit `category`, `importance` (1–5), `status` (active/superseded/deleted), `superseded_by`, Quelle (Chat und Turn) und `embedding`. Fakten werden nie überschrieben, sondern **abgelöst**, damit die Historie erhalten bleibt.
-- **fact_entities**: n:m-Verknüpfung zwischen Fakt und Entität.
-- **relations**: gerichtete Kanten zwischen Entitäten (`arbeitet_bei`, `leitet`, `kennt` …).
-- **conversations / turns**: Chats mit Titel, Zusammenfassung und Embedding; Turns mit Nutzer- und Assistenten-Nachricht und Tool-Log.
-- **profile**: genau eine Zeile mit dem Kernprofil und einem Änderungszähler.
-- **jobs**: persistente Job-Queue (übersteht Neustarts, Retry mit Backoff, Deduplizierung über `dedupe_key`).
-- **facts_fts / turns_fts**: FTS5-Volltextindex mit Trigram-Tokenizer, der Teilwörter findet (wichtig für deutsche Komposita).
+- Der Systemprompt ändert sich nur, wenn sich das Gedächtnis ändert. Dadurch bleibt das Prompt-Caching des Anbieters gültig.
+- Alles, was sich pro Nachricht ändert, steht im `<kontext>`-Block direkt vor der Nachricht.
 
-## Lesepfad (`app/memory/retrieval.py`)
+### Datenmodell (`app/db.py`, Migrationen v1 + v2)
 
-1. **Entity-Detection**: Namen und Aliase aller aktiven Entitäten werden in der aktuellen Nachricht gesucht, ergänzend in der vorherigen Nachricht und der letzten Antwort.
-2. **Hybrid-Suche**:
-   - FTS5/BM25 über die Fakten
-   - optional Kosinus-Ähnlichkeit über Embeddings (numpy, Brute-Force)
-   - die wichtigsten Fakten der erkannten Entitäten
-3. **Reciprocal Rank Fusion** der Ranglisten, gewichtet mit `importance` und Aktualität (exponentieller Zerfall, ~4 Monate).
-4. **Rendering** im Token-Budget (`CONTEXT_TOKEN_BUDGET`): Steckbriefe der erkannten Entitäten (inkl. Beziehungen) plus relevante Fakten mit ID und Datum.
+- **entities**: self, person, project, organization, idea, strategy, goal, life_area, topic. Dazu Aliase, Zusammenfassung, Attribute und Status.
+- **facts**: atomare Aussagen mit Kategorie, Wichtigkeit, Quelle und Embedding.
+  - `pinned` markiert eine gespeicherte Erinnerung.
+  - Veraltete Fakten werden nicht gelöscht, sondern **abgelöst** (`superseded_by`), damit die Historie erhalten bleibt.
+- **fact_entities**, **relations** bilden einen schlanken Wissensgraphen.
+- **conversations / turns** enthalten die Chats im Wortlaut, Titel, Zusammenfassung, Freigabe-Modus und `dreamed_at`.
+- **profile** enthält die Memory-Zusammenfassung.
+- **approvals** enthält Tool-Aufrufe, die auf eine Freigabe warten.
+- **jobs** ist eine persistente Queue mit Retry, Backoff und Deduplizierung.
+- **meta** ist ein Schlüssel-Wert-Speicher (z. B. für den Konsolidierungsstand).
+- FTS5 mit Trigram-Index über Fakten und Turns.
 
-Bei kurzen Rückfragen ("und was meinst du dazu?") wird die vorherige Nutzernachricht in die Suchanfrage einbezogen.
+### Lesepfad (`app/memory/retrieval.py`)
 
-## Agent-Loop (`app/agent/session.py`)
+1. Namen und Aliase bekannter Entitäten in der Nachricht erkennen. Dazu ihren Steckbrief mit Beziehungen laden.
+2. Hybrid-Suche: BM25 und optional Embeddings, ergänzt um die Fakten der erkannten Entitäten.
+3. Die Treffer per Reciprocal Rank Fusion zusammenführen und nach Wichtigkeit und Aktualität gewichten. Gespeicherte Erinnerungen werden ausgelassen, weil sie schon im Systemprompt stehen.
 
-- Der Systemprompt besteht aus Persona, Datum und Uhrzeit, Kernprofil und abgerufenen Erinnerungen. Ein eventueller Systemprompt von Open WebUI bleibt danach erhalten.
-- Die Gedächtnis-Tools werden serverseitig ausgeführt, bis zu `MAX_TOOL_ITERATIONS` Runden. In der letzten Runde werden keine Tools mehr angeboten, damit das Modell antworten muss.
-- Text, Reasoning und Usage werden live an Open WebUI gestreamt. Tool-Aktivität erscheint optional als einklappbarer `<details type="memory">`-Block. Dieser wird aus der Historie wieder entfernt und nicht gespeichert.
-- **Upstream-API:** Chat Completions (Standard) oder Responses API (`app/responses_api.py`). Bei der Responses API wird der Chat-Payload übersetzt:
-  - Nachrichten werden zu Input-Items, Tool-Calls zu `function_call`/`function_call_output`.
-  - `reasoning_effort` wird zu `reasoning.effort` plus Zusammenfassung.
-  - Stream-Events werden zurück in Chat-Chunks übersetzt, Reasoning-Zusammenfassungen kommen als `reasoning_content`.
-  - Verschlüsselte Reasoning-Items werden innerhalb des Tool-Loops zurückgereicht, es gilt immer `store: false`.
-  - Lehnt ein Modell Tools mit `reasoning_effort` auf Chat Completions ab, wechselt der Harness automatisch auf die Responses API und merkt sich das pro Modell. Scheitert auch die, folgt ein Fallback ohne Tools.
-- Tools, die Open WebUI selbst mitschickt (native Function Calling), werden an den Client durchgereicht.
-- **Inkognito-Modus**: liest das Gedächtnis, bekommt keine Schreib-Tools, speichert nichts.
-- **Open-WebUI-Hintergrundaufgaben** (Titel, Tags, Follow-ups; erkennbar an `### Task:`) werden ohne Gedächtnis durchgereicht.
-- **Chat-Zuordnung** läuft über den Header `X-OpenWebUI-Chat-Id`, als Fallback über einen Hash der ersten Nachricht. Der Turn-Index ist die Anzahl der Nutzernachrichten. Eine neu generierte Antwort ersetzt deshalb den bestehenden Turn, statt einen neuen anzulegen.
+### Schreibpfad: Dreaming (`app/memory/extraction.py`, `consolidation.py`, `jobs.py`)
 
-## Schreibpfad (`app/memory/extraction.py`, `app/jobs.py`)
+1. Jede Nachricht verschiebt den Job `dream_conversation` des Chats nach hinten. Er läuft also erst nach `DREAM_IDLE_MINUTES` Ruhe. Startet ein neuer Chat, werden wartende Jobs vorgezogen.
+2. Die **Extraktion** verarbeitet alle neuen Turns eines Chats in einem LLM-Call (bei langen Chats in Blöcken). Bestehende Entitäten und Fakten werden mitgegeben. Das Modell antwortet mit Operationen `add` / `supersede` / `delete` sowie Entitäten und Relationen, und ein Schutz verhindert Duplikate.
+3. Dabei entstehen ein **Titel und eine Zusammenfassung** des Chats.
+4. **Konsolidierung**: Entitäten mit vielen bzw. stark gewachsenen Fakten werden aufgeräumt. Duplikate werden zusammengeführt, Überholtes gelöscht und der Steckbrief neu geschrieben. Gespeicherte Erinnerungen werden dabei nie gelöscht.
+5. Nach N Änderungen wird die **Memory-Zusammenfassung** neu gebaut. Danach folgen Embeddings und der Vault-Export.
 
-Nach jeder Antwort wird ein Job `extract_turn` angelegt:
+## Tools
 
-1. **Kandidaten** sammeln: erkannte und semantisch ähnliche Entitäten, bestehende Fakten zum Thema (mit IDs), die letzten zwei Turns als Kontext und bereits per Tool gespeicherte Inhalte.
-2. **Ein LLM-Call** mit JSON-Output erledigt Extraktion und Konsolidierung zugleich: Entitäten (bestehende als `E<id>`, neue als `N1`…), Fakten mit `add` / `supersede` / `delete` und Relationen.
-3. **Validierung und Anwendung** in einer Transaktion. Dabei greifen ein Duplikat-Schutz für Entitäten (gleicher Name oder Alias und Typ) und für Fakten (normalisiert identischer Inhalt). Ungültige Referenzen werden ignoriert.
-4. **Folgejobs**:
-   - Embeddings nachziehen
-   - nach `PROFILE_REBUILD_EVERY` Änderungen das Profil neu bauen
-   - Vault-Export (entprellt)
+### ToolRegistry (`app/tools/`)
 
-Nach `SUMMARY_IDLE_MINUTES` Inaktivität wird der Chat zusammengefasst und mit Titel und Embedding für `search_past_chats` gespeichert.
+- Provider liefern Tools vom Typ `ToolSpec` (Name, Schema, `kind` = read / write / memory, Quelle, Policy). Aktuell gibt es zwei: `MemoryToolProvider` und `MCPToolProvider`.
+- Der Freigabe-Modus entscheidet pro Tool (`permissions.decide`):
 
-## Warum SQLite?
+  | kind \ Modus | plan | ask | auto |
+  |---|---|---|---|
+  | read | allow | allow | allow |
+  | write | hidden | **ask** | allow |
+  | memory | allow | allow | allow (Inkognito: hidden) |
 
-Ein Nutzer, einige tausend bis zehntausend Fakten: Für diesen Umfang sind SQLite mit WAL, FTS5 und Brute-Force-Vektorsuche schnell genug (Millisekunden). Das Backup ist eine einzige Datei. Der Harness läuft deshalb bewusst als **ein** Prozess. Worker und API teilen sich die Verbindung.
+  Config-Regeln gehen vor: `deny` → hidden, `ask` → ask, `allow` → allow (außer in plan).
+- **Tool-Suche**: Gibt es mehr Tools als `TOOL_SEARCH_THRESHOLD`, werden MCP-Tools nur über `tool_search` angeboten. Gefundene Tools werden für den Rest der Antwort freigeschaltet. Der Zustand dafür liegt pro Anfrage im `ToolContext`.
 
-## Mögliche nächste Schritte
+### Freigaben (ask-Modus)
 
-- Wöchentlicher Review-Job: offene Follow-ups bei Personen, ruhende Ideen, Projekt-Deadlines
-- Zwei-Wege-Sync mit dem Obsidian-Vault
-- Kleine Web-Oberfläche zum Durchstöbern und Korrigieren des Gedächtnisses
-- Projekt-Modi (`work/…`), die beim Retrieval Arbeitsprojekte priorisieren
-- Konsolidierungs-Job, der semantisch ähnliche Fakten zusammenführt
+1. Das Modell ruft ein veränderndes Tool auf. Der Harness speichert den Aufruf in `approvals`, führt ihn aber **nicht** aus. Das Modell bekommt als Ergebnis die Anweisung, um Bestätigung zu bitten. In Open WebUI erscheint "⏸️ Wartet auf Freigabe".
+2. Bei der nächsten Nachricht im selben Chat:
+   - Eine kurze Zustimmung ("ok", "ja", "mach") führt alle vorgemerkten Aktionen aus. Die Ergebnisse landen im `<kontext>`.
+   - Eine Ablehnung ("nein", "stopp") verwirft die Aktionen.
+   - Bei jeder anderen Nachricht verfallen sie.
+
+   Das Modell kann sich also nicht selbst freigeben.
+3. Mit einer eigenen UI können dieselben Freigaben später über Buttons laufen. Die Datenbasis dafür steht schon.
+
+### MCP-Host (`app/mcp/`)
+
+- **config.py** liest Configs im Claude-Code-Format (`mcpServers`).
+  - Transporte: `stdio` (command/args/env/cwd), `http` (Streamable HTTP) und `sse`.
+  - `${VAR}` bzw. `${VAR:-default}` werden aus der Umgebung und `secrets.env` ersetzt.
+  - Erweiterungen: `disabled`, `timeout`, `tools.allow/ask/deny/readOnly`.
+- **connection.py** startet pro Server **einen Owner-Task**. Dieser öffnet und schließt Transport und Session (MCP-SDK 2.x `Client`) im selben Task, wie es anyio verlangt.
+  - stderr geht in `data/logs/mcp/<name>.log`.
+  - Gesundheitscheck alle 30 s über `tools/list` (`ping` gibt es im Protokoll 2026-07-28 nicht mehr). Schlägt ein Aufruf fehl, wird sofort geprüft.
+  - Fällt der Server aus, startet er mit exponentiellem Backoff neu.
+  - Auf `notifications/tools/list_changed` wird die Tool-Liste aktualisiert.
+- **manager.py** startet alle Server parallel. Beim Harness-Start wartet er höchstens `MCP_STARTUP_WAIT`, bis jeder Server einen ersten Startversuch hinter sich hat. Danach geht es im Hintergrund weiter.
+  - Hot-Reload bei Dateiänderungen. Nur Server mit geänderter Startkonfiguration werden neu gestartet, Regeln und Timeouts gelten ohne Neustart.
+- **Tool-Namen** haben die Form `mcp__<server>__<tool>`, auf 64 Zeichen begrenzt.
+- **Ergebnisse:**
+  - Text und `structuredContent` werden übernommen, Ressourcen als Text.
+  - Bilder erscheinen vorerst nur als Platzhalter.
+  - Lange Ausgaben werden gekürzt (`MCP_MAX_OUTPUT_CHARS`).
+
+## Upstream (`app/llm.py`, `app/responses_api.py`)
+
+- Chat Completions ist der Standard. Die Responses API wird verwendet bei `UPSTREAM_API=responses`, für Modelle in `RESPONSES_MODELS` oder automatisch, wenn ein Modell Tools zusammen mit `reasoning_effort` ablehnt.
+- **Übersetzung Chat Completions ⇄ Responses API:**
+  - Nachrichten werden zu Input-Items, Tool-Calls zu `function_call` / `function_call_output`.
+  - Stream-Events werden zurück in Chat-Chunks übersetzt. Reasoning-Zusammenfassungen kommen als `reasoning_content`.
+  - Verschlüsseltes Reasoning wird innerhalb des Tool-Loops zurückgereicht. Es gilt immer `store: false`.
+- **Fallbacks:**
+  - Klappt die Responses API nicht, geht es über Chat Completions ohne Tools weiter.
+  - Lehnt der Anbieter Reasoning-Zusammenfassungen oder verschlüsseltes Reasoning ab, werden diese Features abgeschaltet.
+
+## Open-WebUI-Eigenheiten (`app/openwebui.py`)
+
+- Die Chat-ID kommt über `X-OpenWebUI-Chat-Id`, sobald Open WebUI mit `ENABLE_FORWARD_USER_INFO_HEADERS=true` läuft. Ohne den Header dient ein Hash der ersten Nachricht als Ersatz.
+- Hintergrundaufgaben (Titel, Tags; erkennbar an `### Task:`) werden ohne Gedächtnis durchgereicht.
+- Aktivitätsblöcke (`<details type="memory">`) werden aus der Historie entfernt, bevor sie ans Modell gehen.
+
+## Nächste Schritte
+
+- **Eigene UI:** Eine eigene API mit Chats im Harness (als Baum) und typisierten Events (`message.delta`, `tool.started`, `approval.required` …). Darauf eine Oberfläche mit Chat, Memory-Verwaltung, MCP-Status und Freigabe-Buttons. Der OpenAI-Endpunkt bleibt als Adapter für Open WebUI.
+- Bilder aus MCP-Ergebnissen über die Responses API weiterreichen.
+- OAuth für Remote-MCP-Server.
+- MCP-Prompts als Slash-Befehle, MCP-Ressourcen per @-Erwähnung.

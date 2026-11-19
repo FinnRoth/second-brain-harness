@@ -5,3 +5,5 @@ __pycache__/
 data/
 vault/
 .pytest_cache/
+config/mcp.json
+config/secrets.env

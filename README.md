@@ -1,163 +1,205 @@
 # Second Brain Harness
 
-Ein Backend für einen persönlichen KI-Assistenten mit **Langzeitgedächtnis** – wie ChatGPT/Claude mit Memory, aber an deine **eigene LiteLLM-API** angebunden und mit allen Daten lokal in einer SQLite-Datei.
-
-Open WebUI ist das Frontend, der Harness sitzt als OpenAI-kompatibler Server dazwischen:
+Ein Backend für einen persönlichen KI-Assistenten mit **Langzeitgedächtnis im ChatGPT-Stil** und **MCP-Tools wie in Claude Code**. Es ist an deine **eigene LiteLLM-API** angebunden, und alle Daten bleiben lokal.
 
 ```
-Open WebUI ──(OpenAI-API)──▶ Harness ──▶ LiteLLM ──▶ GPT-5 / Claude / …
-                               │
-                    SQLite: Profil · Entitäten · Fakten · Chats
-                               │
-                    (optional) Obsidian-Vault als Markdown
+Open WebUI (Docker) ──(OpenAI-API)──▶ Harness (nativ auf dem Mac) ──▶ LiteLLM ──▶ GPT / Claude / …
+                                         │
+                       ┌─────────────────┼──────────────────────┐
+                 Gedächtnis (SQLite)   MCP-Server             Obsidian-Vault
+                 Zusammenfassung,      npx / uvx / lokal      (Markdown-Export)
+                 Erinnerungen, Chats   oder remote (HTTP)
 ```
 
-Was er tut:
+- **Erinnert sich wie ChatGPT:** In jedem Chat stehen eine Memory-Zusammenfassung über dich (inkl. Antwort-Präferenzen), gespeicherte Erinnerungen und deine letzten Gespräche. Dazu kommen pro Nachricht Steckbriefe erwähnter Personen und Projekte.
+- **Lernt im Hintergrund ("Dreaming"):** Nach ein paar Minuten Ruhe wird ein Chat als Ganzes verarbeitet und das Wissen aufgeräumt.
+- **Ist strukturiert:** Personen, Projekte (Arbeit/privat), Organisationen, Ideen, Strategien und Ziele mit Beziehungen und Historie.
+- **Bindet MCP-Server an wie Claude Code:** Server werden einfach per Befehl gestartet (`npx …`, `uvx --from git+…`), ohne Repo-Klonen und ohne URL-Freigabe. Remote-Server laufen über HTTP.
+- **Hat Freigabe-Modi** wie Claude Code: `plan`, `ask` und `auto`.
 
-- **Erinnert automatisch:** Zu jeder Nachricht werden passende Erinnerungen und Steckbriefe (Personen, Projekte …) in den Kontext geladen, ohne dass du danach fragen musst.
-- **Lernt automatisch:** Nach jeder Antwort extrahiert ein Hintergrund-Job strukturiert, was wichtig ist, und gleicht es mit dem bestehenden Wissen ab (neu / aktualisiert / veraltet).
-- **Ist strukturiert:** Personen, Projekte (Arbeit/privat), Organisationen, Ideen, Strategien, Ziele und Lebensbereiche mit Beziehungen untereinander, dazu atomare Fakten mit Historie.
-- **Kann aktiv nachschlagen:** Das Modell hat Tools (`search_memory`, `get_entity`, `search_past_chats`, `remember`, `forget_fact` …).
-- **Hat ein Kernprofil:** Eine kompakte Zusammenfassung über dich, die in jedem Chat steckt und sich laufend selbst aktualisiert.
-- **Ist transparent:** Admin-API zum Ansehen und Korrigieren und ein automatischer Export als Obsidian-Vault.
-
-Details zum Aufbau stehen in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Der Aufbau ist in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) beschrieben.
 
 ---
 
-## Schnellstart (Docker auf dem Mac)
+## Installation auf dem Mac
+
+Voraussetzungen: [uv](https://docs.astral.sh/uv/) (`brew install uv`), für Node-basierte MCP-Server `node` (`brew install node`) und Docker Desktop für Open WebUI.
 
 ```bash
-cp .env.example .env
+scripts/macos/install.sh
 ```
 
-In `.env` mindestens `LITELLM_BASE_URL`, `LITELLM_API_KEY`, `CHAT_MODELS`, `HARNESS_API_KEY` und `USER_NAME` setzen. Danach:
+Das Skript:
+
+- legt `.env`, `config/mcp.json` und `config/secrets.env` an (falls sie fehlen),
+- installiert die Abhängigkeiten,
+- richtet den Harness als **Hintergrunddienst** (LaunchAgent) ein. Er startet beim Login automatisch und nach einem Absturz neu.
+
+Danach `.env` ausfüllen: mindestens `LITELLM_BASE_URL`, `LITELLM_API_KEY`, `CHAT_MODELS`, `HARNESS_API_KEY` und `USER_NAME`. Anschließend den Dienst neu starten:
 
 ```bash
-docker compose up -d --build
+launchctl kickstart -k gui/$(id -u)/com.secondbrain.harness
 ```
 
-- Open WebUI: http://localhost:3000 (beim ersten Start einen Account anlegen)
+Dann Open WebUI starten (der `HARNESS_API_KEY` wird aus `.env` übernommen):
+
+```bash
+docker compose up -d
+```
+
+- Open WebUI: http://localhost:3000
 - Harness-Admin-API (Swagger): http://localhost:8100/docs
+- Logs: `~/Library/Logs/SecondBrain/harness.log`
 
-Im Modell-Dropdown von Open WebUI erscheinen:
+In Open WebUI erscheinen zwei Modelle:
 
 | Modell | Verhalten |
 |---|---|
-| `brain/gpt-5` | Normaler Chat mit Gedächtnis (liest und lernt) |
-| `incognito/gpt-5` | Liest das Gedächtnis, speichert aber **nichts** |
+| `brain/<modell>` | Normaler Chat mit Gedächtnis |
+| `incognito/<modell>` | Liest das Gedächtnis, speichert aber **nichts** |
 
-### Open WebUI schon vorhanden?
+Empfehlung für Open WebUI: Die eingebaute Memory-Funktion ausgeschaltet lassen. Function Calling kann auf "Default" bleiben, weil die Tools im Harness laufen.
 
-Den `open-webui`-Service in `docker-compose.yml` entfernen und in Open WebUI unter **Admin-Einstellungen → Verbindungen → OpenAI** eine Verbindung anlegen:
+<details>
+<summary>Alternativen: ohne LaunchAgent / komplett in Docker</summary>
 
-- URL: `http://host.docker.internal:8100/v1`
-- Key: dein `HARNESS_API_KEY`
+Manuell im Terminal starten:
 
-Zusätzlich die Umgebungsvariable `ENABLE_FORWARD_USER_INFO_HEADERS=true` für Open WebUI setzen. Ohne sie funktioniert es auch, die Zuordnung von Chats ist dann aber ungenauer.
+```bash
+uv run uvicorn app.main:app --port 8100
+```
 
-### Empfohlene Einstellungen in Open WebUI
+Komplett in Docker: MCP-Server laufen dann im Container und kommen nicht an Mac-Apps heran. Ordner müssen gemountet werden.
 
-- Die **eingebaute Memory-Funktion** (Einstellungen → Personalisierung) ausgeschaltet lassen, sonst gibt es doppeltes Gedächtnis.
-- Unter **Admin → Einstellungen → Oberfläche** kann für Titel- und Tag-Generierung ein eigenes "Task-Modell" gewählt werden. Der Harness erkennt diese Anfragen aber auch selbst und reicht sie ohne Gedächtnis durch.
-- **Function Calling** im Modell kann auf "Default" bleiben. Die Gedächtnis-Tools laufen im Harness, nicht in Open WebUI.
-- **Reasoning-Modelle:** Siehe den Abschnitt "Reasoning-Modelle und Responses API" weiter unten.
+```bash
+HARNESS_URL=http://harness:8000/v1 docker compose --profile docker up -d --build
+```
+
+</details>
 
 ---
 
-## Lokal ohne Docker
+## Gedächtnis
 
-```bash
-python3 -m venv .venv
+So ist der Kontext in jedem Chat aufgebaut, ähnlich wie bei ChatGPT:
+
+| Teil | Inhalt | Pflege |
+|---|---|---|
+| **Memory-Zusammenfassung** | Person, Arbeit, Projekte, Ziele, Personen, Strategien, **Antwort-Präferenzen** | automatisch (Dreaming) |
+| **Gespeicherte Erinnerungen** | Was du ausdrücklich gemerkt haben willst ("Merk dir …") | `remember`-Tool, Admin-API |
+| **Letzte Gespräche** | Die letzten ~25 Chats mit Titel und deinen Nachrichten (nicht den Antworten) | automatisch |
+| **Kontext pro Nachricht** | Uhrzeit, Steckbriefe erwähnter Personen und Projekte, passende Fakten | Suche pro Nachricht |
+
+Die ersten drei Teile ändern sich nur, wenn sich das Gedächtnis ändert. Dadurch greift das **Prompt-Caching** deines Anbieters, und Antworten werden schneller und günstiger.
+
+**Dreaming:** Nach `DREAM_IDLE_MINUTES` (Standard 15) ohne neue Nachricht wird ein Chat verarbeitet. Dabei werden Fakten, Personen, Projekte und Präferenzen gelernt, ein Titel und eine Zusammenfassung erstellt, und anschließend werden Entitäten mit vielen Fakten aufgeräumt (Duplikate zusammengeführt, Überholtes entfernt). Startest du einen neuen Chat, werden wartende Chats sofort verarbeitet.
+
+Im Chat funktioniert zum Beispiel:
+
+- "Merk dir, dass …"
+- "Vergiss das mit …"
+- "Was weißt du über Max?"
+- "Was hatten wir letzte Woche zu Projekt X besprochen?"
+
+### Ansehen und pflegen
+
+Alle Endpunkte findest du unter http://localhost:8100/docs. Die wichtigsten:
+
+| Endpunkt | Zweck |
+|---|---|
+| `GET /memory/prompt-preview?message=…` | **Was sieht der Assistent?** Systemprompt plus Kontext zu einer Nachricht |
+| `GET /memory/summary` · `POST /memory/profile/rebuild` | Memory-Zusammenfassung ansehen / neu bauen |
+| `GET /memory/saved` · `POST /memory/facts/{id}/pin` | Gespeicherte Erinnerungen |
+| `GET /memory/entities?type=person` · `GET /memory/entities/{id}` | Personen, Projekte … mit Fakten und Historie |
+| `PATCH/DELETE /memory/facts/{id}` | Korrigieren, löschen |
+| `POST /memory/entities/{keep}/merge/{dup}` | Duplikate zusammenführen |
+| `POST /memory/conversations/{id}/dream` | Chat sofort verarbeiten |
+
+Ist `EXPORT_DIR` gesetzt, wird das Gedächtnis automatisch als **Obsidian-Vault** exportiert: eine Notiz pro Entität mit `[[Links]]`, Profil und Chat-Zusammenfassungen. Der Export geht nur in eine Richtung.
+
+---
+
+## MCP-Server
+
+MCP-Server kommen in `config/mcp.json` und stehen dort im **selben Format wie in Claude Code** bzw. Claude Desktop. Bestehende Configs lassen sich also direkt übernehmen. Beispiele stehen in [`config/mcp.example.json`](config/mcp.example.json):
+
+```jsonc
+{
+  "mcpServers": {
+    // npm-Paket – wird beim ersten Start automatisch geladen
+    "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
+                "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" } },
+    // Python-Server direkt aus einem Git-Repo – kein Klonen nötig
+    "mein-tool": { "command": "uvx", "args": ["--from", "git+https://github.com/ich/mein-mcp", "mein-mcp"] },
+    // Node-Server direkt aus GitHub
+    "node-tool": { "command": "npx", "args": ["-y", "github:ich/node-mcp"] },
+    // lokaler Ordner auf dem Mac
+    "obsidian": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "~/Documents/Obsidian"],
+                  "tools": { "ask": ["write_file", "edit_file"] } },
+    // Remote-Server
+    "linear": { "type": "http", "url": "https://mcp.linear.app/mcp",
+                "headers": { "Authorization": "Bearer ${LINEAR_TOKEN}" } }
+  }
+}
 ```
 
-```bash
-.venv/bin/pip install -r requirements-dev.txt
-```
+- **Secrets** stehen in `config/secrets.env` (`GITHUB_TOKEN=…`) und werden als `${NAME}` eingesetzt. Sie landen nie in der Datenbank und nie im Log.
+- **Änderungen** an `mcp.json` oder `secrets.env` werden automatisch übernommen. Nur geänderte Server starten neu.
+- **Optionale Felder pro Server:**
+  - `"disabled": true`
+  - `"timeout": 60`
+  - `"tools": {"allow": [], "ask": [], "deny": [], "readOnly": []}`. Hier sind Muster wie `"write_*"` erlaubt.
+- **Status und Fehler:**
+  - `GET /mcp/servers` zeigt alle Server mit Status.
+  - `GET /mcp/servers/{name}/logs` zeigt die stderr-Ausgabe eines Servers.
+  - `POST /mcp/servers/{name}/tools/{tool}` ruft ein Tool direkt auf, zum Testen.
+- **Viele Tools:** Ab `TOOL_SEARCH_THRESHOLD` (Standard 40) bekommt das Modell eine **Tool-Suche** und schaltet passende Tools selbst frei.
 
-```bash
-cp .env.example .env
-```
+### Freigabe-Modi
 
-In `.env` `LITELLM_BASE_URL=http://localhost:4000` setzen und danach:
+| Modus | Lesende Tools | Verändernde Tools |
+|---|---|---|
+| `plan` | ✅ sofort | ❌ nicht verfügbar. Der Assistent plant nur. |
+| `ask` (Standard) | ✅ sofort | ⏸️ wird vorgemerkt. Du antwortest **"ok"** zum Ausführen oder **"nein"** zum Verwerfen. |
+| `auto` | ✅ sofort | ✅ sofort |
 
-```bash
-.venv/bin/uvicorn app.main:app --port 8100
-```
-
-Tests:
-
-```bash
-.venv/bin/python -m pytest
-```
+- **Modus wechseln:** Schreib `/plan`, `/ask` oder `/auto` an den Anfang einer Nachricht. Der Modus gilt dann für diesen Chat, zum Beispiel `/plan Wie strukturiere ich meinen Vault um?`.
+- **Was als lesend gilt:** Ein Tool gilt als lesend, wenn der Server es so markiert (`readOnlyHint`) oder du es in `"readOnly"` einträgst.
+- **Regeln aus der Config gehen immer vor:** `deny` blendet ein Tool aus, `ask` fragt immer nach, `allow` erlaubt ohne Rückfrage.
+- **Gedächtnis-Tools** sind in allen Modi erlaubt.
 
 ---
 
 ## Reasoning-Modelle und Responses API
 
-Manche Modelle (z. B. neuere GPT-Modelle über Azure) erlauben auf `/v1/chat/completions` keine Tools zusammen mit `reasoning_effort`. Über `/v1/responses` geht beides. Der Harness kann deshalb nach hinten die **Responses API** von LiteLLM nutzen. Open WebUI merkt davon nichts, nach vorne bleibt alles Chat Completions.
+Manche Modelle (z. B. neuere GPT-Modelle über Azure) lehnen Tools zusammen mit `reasoning_effort` auf `/v1/chat/completions` ab. Der Harness wechselt dann **automatisch** auf `/v1/responses`. Dort gehen Tools und Reasoning gleichzeitig, und eine Zusammenfassung des Reasonings erscheint in Open WebUI als Denkprozess. Es wird nichts beim Anbieter gespeichert (`store: false`).
 
-Es gibt drei Wege, die Responses API zu nutzen:
+Einstellungen dafür: `UPSTREAM_API=responses` (immer), `RESPONSES_MODELS=…` (nur bestimmte Modelle) und `REASONING_TOOLS_CONFLICT` (Verhalten im Konfliktfall).
 
-- **Automatisch (Standard):** Lehnt ein Modell Tools mit Reasoning ab, wechselt der Harness für dieses Modell selbstständig auf `/v1/responses`. Funktioniert auch das nicht, antwortet er über Chat Completions ohne Gedächtnis-Tools.
-- **Immer:** `UPSTREAM_API=responses`
-- **Nur für bestimmte Modelle:** `RESPONSES_MODELS=gpt-6.1,…`
+## Embeddings (optional)
 
-Über die Responses API läuft das so:
-
-- **Tools und Reasoning gleichzeitig:** Das Modell kann während des Nachdenkens im Gedächtnis nachschlagen.
-- **Denkprozess sichtbar:** Reasoning-Zusammenfassungen erscheinen in Open WebUI als einklappbarer Denkprozess. Abschalten mit `RESPONSES_REASONING_SUMMARY=`.
-- **Nichts wird beim Anbieter gespeichert** (`store: false`). Das verschlüsselte Reasoning wird nur innerhalb einer Antwort zwischen den Tool-Schritten zurückgereicht.
-- **Optionale Features fallen automatisch weg:** Lehnt der Anbieter die Reasoning-Zusammenfassung oder das verschlüsselte Reasoning ab, schaltet der Harness es selbst ab und wiederholt die Anfrage.
-
-Wenn die Responses API nicht verfügbar ist, regelt `REASONING_TOOLS_CONFLICT`, was im Konfliktfall passiert: `use_responses` (Standard), `prefer_reasoning` (ohne Tools antworten) oder `prefer_tools` (`reasoning_effort=none`).
-
-## Embeddings: brauche ich die?
-
-Nicht zwingend. Ohne Embeddings findet der Harness Erinnerungen über **Volltextsuche** (inklusive Teilwörtern: "Wohnung" findet auch "Mietwohnung") und über die **Namenserkennung** von Personen, Projekten usw.
-
-Mit Embeddings kommt **semantische Suche** dazu: "Ich bin total erschöpft" findet dann auch "Hatte im Oktober eine stressige Phase mit wenig Schlaf". Dafür in LiteLLM ein Embedding-Modell eintragen (z. B. `text-embedding-3-small`, oder lokal `bge-m3` über Ollama) und in `.env` `EMBEDDING_MODEL=<name>` setzen. Bestehende Einträge werden beim nächsten Start automatisch eingebettet. Nach einem **Wechsel** des Modells:
+Ohne Embeddings findet der Harness Erinnerungen per Volltextsuche (auch Wortteile) und über die Namenserkennung. Mit `EMBEDDING_MODEL=<LiteLLM-Modell>` kommt eine semantische Suche dazu. Nach einem Wechsel des Modells:
 
 ```bash
 curl -X POST -H "Authorization: Bearer $HARNESS_API_KEY" http://localhost:8100/memory/reembed
 ```
 
----
-
-## Gedächtnis ansehen und pflegen
-
-Alles ist unter http://localhost:8100/docs dokumentiert. Die wichtigsten Endpunkte:
-
-| Endpunkt | Zweck |
-|---|---|
-| `GET /memory/profile` · `POST /memory/profile/rebuild` | Kernprofil ansehen / neu erstellen |
-| `GET /memory/entities?type=person` | Alle Personen (oder `project`, `idea`, `strategy`, …) |
-| `GET /memory/entities/{id}` | Steckbrief mit allen Fakten (inkl. Historie) und Beziehungen |
-| `PATCH /memory/entities/{id}` | Korrigieren, z. B. `{"status": "archived"}` |
-| `POST /memory/entities/{keep}/merge/{dup}` | Duplikate zusammenführen |
-| `GET /memory/facts?q=…` · `PATCH/DELETE /memory/facts/{id}` | Fakten suchen, korrigieren, löschen |
-| `GET /memory/search?q=…` | Was würde der Assistent zu dieser Nachricht erinnern? |
-| `GET /memory/conversations` | Gespeicherte Chats mit Zusammenfassung |
-| `GET /memory/stats` · `GET /memory/jobs` | Statistik und Hintergrund-Jobs |
-
-Im Chat geht es auch direkt: "Merk dir, dass …", "Vergiss das mit …", "Was weißt du über Max?", "Was hatten wir letzte Woche zu Projekt X besprochen?".
-
-### Obsidian-Vault
-
-Wenn `EXPORT_DIR` gesetzt ist (in Docker: `./vault`), wird das Gedächtnis nach Änderungen automatisch als Markdown exportiert: eine Notiz pro Person, Projekt, Idee usw., mit `[[Wikilinks]]`, dazu `Profil.md` und die Chat-Zusammenfassungen. Den Ordner einfach als Vault in Obsidian öffnen, dann siehst du dein Second Brain auch als Graph.
-
-> Der Export geht nur in eine Richtung. Änderungen an generierten Notizen werden beim nächsten Export überschrieben. Eigene Notizen ohne `generated_by: second-brain-harness` im Frontmatter bleiben unangetastet.
-
----
-
 ## Backup
 
-Dein gesamtes Gedächtnis steckt in `data/brain.db`. Ein Backup im laufenden Betrieb:
+Das gesamte Gedächtnis steckt in `data/brain.db`:
 
 ```bash
 sqlite3 data/brain.db ".backup data/brain-$(date +%F).db"
 ```
 
-## Prompts anpassen
+## Entwicklung
 
-Die Prompts liegen in `app/prompts/*.md`: `system.md` (Persona), `extraction.md` (was gelernt wird), `profile.md` und `summary.md`. Eigene Versionen können über `PROMPTS_DIR=/pfad/zu/prompts` eingebunden werden. Fehlende Dateien fallen auf die Standardversion zurück.
+```bash
+uv sync
+```
+
+```bash
+uv run pytest
+```
+
+Die Prompts liegen in `app/prompts/*.md` und lassen sich über `PROMPTS_DIR` durch eigene Versionen ersetzen.
