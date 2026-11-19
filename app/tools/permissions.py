@@ -35,10 +35,12 @@ def decide(spec: ToolSpec, ctx: ToolContext) -> Decision:
     if spec.kind == "memory":
         return "hidden" if ctx.incognito else "allow"
     if spec.kind == "read":
-        return "ask" if spec.policy == "ask" else "allow"
+        return "ask" if spec.policy == "ask" and spec.name not in ctx.allowed_tools else "allow"
     # schreibend
     if ctx.permission_mode == "plan":
         return "hidden"
+    if spec.name in ctx.allowed_tools:
+        return "allow"
     if spec.policy == "ask":
         return "ask"
     if spec.policy == "allow" or ctx.permission_mode == "auto":

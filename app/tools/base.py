@@ -44,6 +44,7 @@ class ToolContext:
     incognito: bool = False
     permission_mode: str = "ask"
     activated: set[str] = field(default_factory=set)  # per tool_search freigeschaltete Tools
+    allowed_tools: set[str] = field(default_factory=set)  # „für diesen Chat erlaubt“
     memory_written: bool = False
 
 

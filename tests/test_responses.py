@@ -138,14 +138,15 @@ async def test_responses_unsupported_falls_back_to_chat_without_tools(services, 
 
 async def test_summary_rejected_is_disabled(services, client, fake_llm: FakeLLM):
     services.settings.upstream_api = "responses"
-    orig = fake_llm.responses
+    orig = fake_llm.responses_stream
 
-    async def responses(payload):
+    async def responses_stream(payload):
         if "summary" in (payload.get("reasoning") or {}):
             raise UpstreamError(400, "reasoning.summary is not supported for this model")
-        return await orig(payload)
+        async for ev in orig(payload):
+            yield ev
 
-    fake_llm.responses = responses
+    fake_llm.responses_stream = responses_stream
     fake_llm.responses_handler = lambda p: {"content": "ok"}
     r = await client.post("/v1/chat/completions", json={
         "model": "brain/gpt-5", "reasoning_effort": "low", "messages": [{"role": "user", "content": "hi"}]})

@@ -22,6 +22,7 @@ from .responses_api import ResponsesBackend
 from .tools.mcp import MCPToolProvider
 from .tools.memory import MemoryToolProvider
 from .tools.registry import ToolRegistry
+from .agent.runs import RunManager
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +53,9 @@ class Services:
         self.tools = ToolRegistry(
             [MemoryToolProvider(self.store, self.retriever), MCPToolProvider(self.mcp, settings.mcp_max_output_chars)],
             search_threshold=settings.tool_search_threshold,
+            policy_overrides=self.store.tool_policies,
         )
+        self.runs = RunManager(self)
         # Freigabe-Modi von Inkognito-Chats (werden nicht gespeichert)
         self.ephemeral_modes: dict[str, str] = {}
         self.responses = ResponsesBackend(self.llm, settings)
@@ -93,6 +96,7 @@ class Services:
         return "\n".join(lines)
 
     async def shutdown(self) -> None:
+        await self.runs.shutdown()
         await self.mcp.stop()
         await self.worker.stop()
         await self.llm.close()

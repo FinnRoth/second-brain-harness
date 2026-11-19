@@ -172,6 +172,25 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX idx_approvals_conv ON approvals(conversation_id, status);
     """,
+    # --- v3: eigene App (Nachrichten inkl. Tool-Verlauf) ------------------------
+    """
+    CREATE TABLE messages (
+        id              INTEGER PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        role            TEXT NOT NULL,
+        content         TEXT NOT NULL DEFAULT '',
+        parts           TEXT NOT NULL DEFAULT '[]',
+        model           TEXT,
+        status          TEXT NOT NULL DEFAULT 'done',
+        usage           TEXT,
+        created_at      TEXT NOT NULL
+    );
+    CREATE INDEX idx_messages_conv ON messages(conversation_id, id);
+    ALTER TABLE conversations ADD COLUMN model TEXT;
+    ALTER TABLE conversations ADD COLUMN source TEXT NOT NULL DEFAULT 'openwebui';
+    ALTER TABLE conversations ADD COLUMN allowed_tools TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 

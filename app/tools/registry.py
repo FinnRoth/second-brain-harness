@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from .base import ToolContext, ToolProvider, ToolResult, ToolSpec
 from .permissions import Decision, decide
@@ -32,19 +32,32 @@ class ToolSet:
 
 
 class ToolRegistry:
-    def __init__(self, providers: list[ToolProvider], search_threshold: int = 40) -> None:
+    def __init__(
+        self,
+        providers: list[ToolProvider],
+        search_threshold: int = 40,
+        policy_overrides: Callable[[], dict[str, str]] | None = None,
+    ) -> None:
         self.providers = providers
         self.search_threshold = search_threshold
+        # In der App gesetzte Regeln („immer erlauben“ …) – gehen der Config vor
+        self.policy_overrides = policy_overrides or (lambda: {})
 
     def _all(self, ctx: ToolContext) -> list[tuple[ToolSpec, ToolProvider]]:
         out = []
         seen: set[str] = set()
+        overrides = self.policy_overrides()
         for p in self.providers:
             for spec in p.list_tools(ctx):
                 if spec.name not in seen:
                     seen.add(spec.name)
+                    if spec.name in overrides and spec.kind != "memory":
+                        spec.policy = overrides[spec.name]  # type: ignore[assignment]
                     out.append((spec, p))
         return out
+
+    def all_specs(self, ctx: ToolContext) -> list[ToolSpec]:
+        return [spec for spec, _ in self._all(ctx)]
 
     def resolve(self, ctx: ToolContext) -> ToolSet:
         """Alle Tools, die das Modell in diesem Kontext sehen darf (inkl. Entscheidung)."""

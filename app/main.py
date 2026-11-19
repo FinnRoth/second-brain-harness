@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from .api import mcp_admin, memory_admin, openai_compat
+from .api import mcp_admin, memory_admin, native, openai_compat
 from .config import Settings, get_settings
 from .llm import LLM
 from .services import Services
@@ -36,6 +36,7 @@ def create_app(settings: Settings | None = None, llm: LLM | None = None, service
     app.include_router(openai_compat.router)
     app.include_router(memory_admin.router)
     app.include_router(mcp_admin.router)
+    app.include_router(native.router)
 
     @app.get("/health")
     async def health():

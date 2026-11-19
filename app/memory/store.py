@@ -687,10 +687,160 @@ class MemoryStore:
         return [dict(r) for r in rows]
 
     def set_conversation_summary(self, conversation_id: str, title: str, summary: str, blob: bytes | None) -> None:
+        # Ein vorhandener Titel (z. B. in der App vergeben) bleibt erhalten
         self.db.execute(
-            "UPDATE conversations SET title=?, summary=?, summary_embedding=?, summarized_at=? WHERE id=?",
+            "UPDATE conversations SET title=COALESCE(NULLIF(title, ''), ?), summary=?, summary_embedding=?,"
+            " summarized_at=? WHERE id=?",
             (title, summary, blob, utcnow(), conversation_id),
         )
+
+    # ------------------------------------------------------------ App-Chats
+    def create_conversation(
+        self, conversation_id: str, model: str | None, permission_mode: str | None, source: str = "app"
+    ) -> None:
+        now = utcnow()
+        self.db.execute(
+            "INSERT INTO conversations (id, mode, model, permission_mode, source, created_at, updated_at)"
+            " VALUES (?, 'brain', ?, ?, ?, ?, ?)",
+            (conversation_id, model, permission_mode, source, now, now),
+        )
+
+    def list_chats(self, q: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT c.id, c.title, c.model, c.permission_mode, c.source, c.pinned, c.created_at, c.updated_at,"
+            " (SELECT user_message FROM turns t WHERE t.conversation_id=c.id ORDER BY turn_index LIMIT 1) AS first_message"
+            " FROM conversations c WHERE c.mode='brain'"
+        )
+        params: list[Any] = []
+        if q:
+            sql += (
+                " AND (c.title LIKE ? OR c.summary LIKE ? OR EXISTS (SELECT 1 FROM turns t WHERE"
+                " t.conversation_id=c.id AND (t.user_message LIKE ? OR t.assistant_message LIKE ?)))"
+            )
+            params += [f"%{q}%"] * 4
+        sql += " ORDER BY c.pinned DESC, c.updated_at DESC LIMIT ?"
+        params.append(limit)
+        out = []
+        for r in self.db.query(sql, tuple(params)):
+            d = dict(r)
+            d["pinned"] = bool(d["pinned"])
+            if not d["title"]:
+                d["title"] = (d.get("first_message") or "Neuer Chat").strip().split("\n")[0][:60] or "Neuer Chat"
+            d.pop("first_message", None)
+            out.append(d)
+        return out
+
+    def update_conversation(self, conversation_id: str, **fields: Any) -> None:
+        allowed = {"title", "model", "permission_mode", "pinned"}
+        sets = {k: v for k, v in fields.items() if k in allowed and v is not None}
+        if not sets:
+            return
+        cols = ", ".join(f"{k}=?" for k in sets)
+        values = [int(v) if isinstance(v, bool) else v for v in sets.values()]
+        self.db.execute(f"UPDATE conversations SET {cols} WHERE id=?", (*values, conversation_id))
+
+    def touch_conversation(self, conversation_id: str) -> None:
+        self.db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (utcnow(), conversation_id))
+
+    def delete_conversation(self, conversation_id: str) -> bool:
+        with self.db.transaction():
+            self.db.execute("DELETE FROM approvals WHERE conversation_id=?", (conversation_id,))
+            self.db.execute(
+                "DELETE FROM jobs WHERE status='pending' AND dedupe_key=?", (f"dream:{conversation_id}",)
+            )
+            return self.db.execute("DELETE FROM conversations WHERE id=?", (conversation_id,)).rowcount > 0
+
+    def get_allowed_tools(self, conversation_id: str) -> set[str]:
+        return set(_loads(self.db.scalar("SELECT allowed_tools FROM conversations WHERE id=?", (conversation_id,)), []))
+
+    def allow_tool_for_conversation(self, conversation_id: str, tool: str) -> None:
+        tools = self.get_allowed_tools(conversation_id) | {tool}
+        self.db.execute(
+            "UPDATE conversations SET allowed_tools=? WHERE id=?", (json.dumps(sorted(tools)), conversation_id)
+        )
+
+    def add_message(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        parts: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        status: str = "done",
+        usage: dict[str, Any] | None = None,
+    ) -> int:
+        cur = self.db.execute(
+            "INSERT INTO messages (conversation_id, role, content, parts, model, status, usage, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (
+                conversation_id,
+                role,
+                content,
+                json.dumps(parts or [], ensure_ascii=False),
+                model,
+                status,
+                json.dumps(usage) if usage else None,
+                utcnow(),
+            ),
+        )
+        self.touch_conversation(conversation_id)
+        return cur.lastrowid
+
+    def list_messages(self, conversation_id: str) -> list[dict[str, Any]]:
+        rows = self.db.query("SELECT * FROM messages WHERE conversation_id=? ORDER BY id", (conversation_id,))
+        return [
+            {**dict(r), "parts": _loads(r["parts"], []), "usage": _loads(r["usage"], None)} for r in rows
+        ]
+
+    def get_message(self, message_id: int) -> dict[str, Any] | None:
+        r = self.db.query_one("SELECT * FROM messages WHERE id=?", (message_id,))
+        return {**dict(r), "parts": _loads(r["parts"], []), "usage": _loads(r["usage"], None)} if r else None
+
+    def delete_messages_from(self, conversation_id: str, message_id: int) -> None:
+        """Löscht die Nachricht und alles danach (Bearbeiten / neu generieren) – inkl. zugehöriger Turns."""
+        with self.db.transaction():
+            users_before = self.db.scalar(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id=? AND role='user' AND id<?",
+                (conversation_id, message_id),
+            )
+            self.db.execute("DELETE FROM messages WHERE conversation_id=? AND id>=?", (conversation_id, message_id))
+            # Turn-Index = Anzahl Nutzernachrichten; betroffene Turns entfernen
+            self.db.execute(
+                "DELETE FROM turns WHERE conversation_id=? AND turn_index>?", (conversation_id, users_before)
+            )
+
+    def import_turns_as_messages(self, conversation_id: str) -> int:
+        """Chats aus Open WebUI (nur Turns) einmalig in Nachrichten übernehmen."""
+        if self.db.scalar("SELECT COUNT(*) FROM messages WHERE conversation_id=?", (conversation_id,)):
+            return 0
+        turns = self.turns_for_conversation(conversation_id)
+        with self.db.transaction():
+            for t in turns:
+                for role, text in (("user", t["user_message"]), ("assistant", t["assistant_message"])):
+                    self.db.execute(
+                        "INSERT INTO messages (conversation_id, role, content, parts, model, created_at)"
+                        " VALUES (?,?,?,?,?,?)",
+                        (
+                            conversation_id,
+                            role,
+                            text,
+                            json.dumps([{"type": "text", "text": text}], ensure_ascii=False),
+                            t["model"],
+                            t["created_at"],
+                        ),
+                    )
+        return len(turns)
+
+    # ------------------------------------------------------------ Tool-Regeln
+    def tool_policies(self) -> dict[str, str]:
+        rows = self.db.query("SELECT key, value FROM meta WHERE key LIKE 'tool_policy:%'")
+        return {r["key"][len("tool_policy:") :]: r["value"] for r in rows}
+
+    def set_tool_policy(self, tool: str, policy: str | None) -> None:
+        if policy is None:
+            self.db.execute("DELETE FROM meta WHERE key=?", (f"tool_policy:{tool}",))
+        else:
+            self.set_meta(f"tool_policy:{tool}", policy)
 
     def conversation_embeddings(self) -> list[tuple[str, bytes]]:
         rows = self.db.query("SELECT id, summary_embedding FROM conversations WHERE summary_embedding IS NOT NULL")

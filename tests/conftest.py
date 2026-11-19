@@ -29,6 +29,8 @@ class FakeLLM:
     def _respond(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(payload)
         system = payload["messages"][0]["content"] if payload["messages"] else ""
+        if "Chat-Titel" in system:
+            return {"content": "Testtitel"}
         if "Gedächtnis-Modul" in system or "Du pflegst die Memory-Zusammenfassung" in system or "zusammen, damit" in system:
             return self.background(payload)
         return self.handler(payload)

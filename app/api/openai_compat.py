@@ -9,7 +9,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from ..agent.session import MODES, PASSTHROUGH_PARAMS, ChatSession, parse_model
+from ..agent.openai_adapter import MODES, OpenAIChat, parse_model
+from ..agent.session import PASSTHROUGH_PARAMS
 from ..llm import UpstreamError
 from ..openwebui import is_task_request
 from .deps import get_services, require_api_key
@@ -80,7 +81,7 @@ async def chat_completions(request: Request):
     if is_task_request(body):
         return await _passthrough(request, body)
 
-    session = ChatSession(get_services(request), body, dict(request.headers))
+    session = OpenAIChat(get_services(request), body, dict(request.headers))
     await session.prepare()
 
     if body.get("stream"):
