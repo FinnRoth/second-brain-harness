@@ -2,7 +2,7 @@ import { AlertTriangle, Check, ChevronRight, Copy, FileText, Lightbulb, Pencil, 
 import { useEffect, useState } from "react";
 import type { Message, Part, ToolPart } from "../types";
 import { Markdown } from "./Markdown";
-import { ToolCard } from "./ToolCard";
+import { ToolGroup } from "./ToolCard";
 
 function Reasoning({ text, live }: { text: string; live: boolean }) {
   const [open, setOpen] = useState(live);
@@ -122,6 +122,21 @@ export function UserMessage({
   );
 }
 
+/** Aufeinanderfolgende Tool-Nutzungen zu Gruppen zusammenfassen. */
+function groupTools(parts: Part[]): (Part | ToolPart[])[] {
+  const out: (Part | ToolPart[])[] = [];
+  for (const p of parts) {
+    const last = out[out.length - 1];
+    if (p.type === "tool") {
+      if (Array.isArray(last)) last.push(p as ToolPart);
+      else out.push([p as ToolPart]);
+    } else {
+      out.push(p);
+    }
+  }
+  return out;
+}
+
 export function AssistantMessage({
   parts,
   live,
@@ -139,7 +154,7 @@ export function AssistantMessage({
     .filter((p) => p.type === "text")
     .map((p) => (p as { text: string }).text)
     .join("");
-  const lastIdx = parts.length - 1;
+  const lastIdx = groupTools(parts).length - 1;
   const waitingFirst = live && parts.length === 0;
   return (
     <div className="msg assistant">
@@ -150,7 +165,8 @@ export function AssistantMessage({
           <span />
         </div>
       )}
-      {parts.map((p, i) => {
+      {groupTools(parts).map((p, i) => {
+        if (Array.isArray(p)) return <ToolGroup key={`g${i}`} parts={p} live={live} />;
         switch (p.type) {
           case "reasoning":
             return <Reasoning key={i} text={p.text} live={live && i === lastIdx} />;
@@ -160,8 +176,6 @@ export function AssistantMessage({
                 <Markdown text={p.text} />
               </div>
             );
-          case "tool":
-            return <ToolCard key={(p as ToolPart).call_id + i} part={p as ToolPart} live={live} />;
           case "notice":
             return (
               <div key={i} className="notice">

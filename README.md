@@ -61,7 +61,7 @@ launchctl kickstart -k gui/$(id -u)/com.secondbrain.harness
 
 - **Chats** werden in der Seitenleiste nach Datum gruppiert. Du kannst sie durchsuchen, anheften, umbenennen und löschen. Titel entstehen automatisch.
 - **Antworten** werden gestreamt, mit Markdown, Tabellen und Code samt Kopieren-Knopf. Reasoning-Modelle zeigen einen einklappbaren **Denkprozess**.
-- **Tool-Karten** zeigen, was gerade passiert, etwa "Gedächtnis durchsucht" oder "notes · add_note". Aufgeklappt siehst du Eingabe und Ergebnis.
+- **Tool-Nutzung** erscheint als kompakte Zeile, etwa "Gedächtnis durchsucht" oder "notes · add_note". Mehrere Aufrufe hintereinander werden zu einer Gruppe ("3 Aktionen") zusammengefasst. Ein Klick zeigt Eingabe und Ergebnis.
 - **Freigaben:** Bei Aktionen, die etwas verändern, erscheint eine Karte mit diesen Buttons:
   - **Erlauben**
   - **In diesem Chat immer**
@@ -83,7 +83,12 @@ launchctl kickstart -k gui/$(id -u)/com.secondbrain.harness
   - Zusammenfassung ansehen und bearbeiten
   - gespeicherte Erinnerungen verwalten
   - Personen, Projekte, Ideen usw. mit allen Fakten und deren Historie durchstöbern
-- **Tools & MCP:** Status, Logs und Neustart der MCP-Server. Pro Tool kannst du festlegen: Immer erlauben, Immer fragen oder Blockieren.
+- **Tools & MCP:**
+  - MCP-Server hinzufügen, bearbeiten, ein- und ausschalten und entfernen, mit Vorlagen für npx, uvx aus Git, lokale Ordner und Remote.
+  - Konfiguration aus Claude Code per **„JSON einfügen“** übernehmen.
+  - **Secrets** verwalten. Die Werte landen in `config/secrets.env` und werden nie angezeigt.
+  - Status, Logs und Neustart der Server.
+  - Pro Tool festlegen: Immer erlauben, Immer fragen oder Blockieren.
 - **Einstellungen:**
   - **Eigene Anweisungen** stehen in jedem Chat.
   - **Nachschlagewerke** sind Verzeichnisse, Glossare oder interne Link-Listen mit Beschreibung. Pro Dokument wählst du:

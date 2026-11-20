@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from typing import Any
 
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+
+from ..mcp import editor
+from ..mcp.config import ConfigError
 from ..tools.base import ToolContext
 from .deps import get_services, require_api_key
 
@@ -78,3 +83,94 @@ async def list_tools(request: Request, mode: str = "ask", incognito: bool = Fals
 @router.get("/approvals/{conversation_id}")
 async def pending_approvals(request: Request, conversation_id: str):
     return get_services(request).store.pending_approvals(conversation_id)
+
+
+# ---------------------------------------------------------- Konfiguration (App)
+class ServerBody(BaseModel):
+    name: str
+    previous_name: str | None = None
+    config: dict[str, Any]
+
+
+class SecretBody(BaseModel):
+    value: str
+
+
+def _paths(request: Request) -> tuple[str, str | None]:
+    s = get_services(request).settings
+    return s.mcp_config, s.mcp_secrets or None
+
+
+async def _apply(request: Request) -> dict[str, Any]:
+    s = get_services(request)
+    changes = await s.mcp.reload()
+    await s.mcp.wait_until_settled(15)
+    return {"changes": changes, **s.mcp.status()}
+
+
+@router.get("/mcp/config")
+async def get_config(request: Request):
+    """Rohe Konfiguration (mit ${VAR}-Platzhaltern) + Secrets-Übersicht (ohne Werte)."""
+    config_path, secrets_path = _paths(request)
+    try:
+        raw = editor.read_raw(config_path)
+    except ConfigError as e:
+        raise HTTPException(400, str(e)) from e
+    return {
+        "path": config_path,
+        "secrets_path": secrets_path,
+        "servers": raw["mcpServers"],
+        "secrets": editor.list_secrets(secrets_path, config_path),
+    }
+
+
+@router.put("/mcp/config/servers")
+async def put_server(request: Request, body: ServerBody):
+    config_path, _ = _paths(request)
+    try:
+        editor.set_server(config_path, body.name.strip(), body.config, body.previous_name)
+    except ConfigError as e:
+        raise HTTPException(400, str(e)) from e
+    return await _apply(request)
+
+
+@router.delete("/mcp/config/servers/{name}")
+async def remove_server(request: Request, name: str):
+    config_path, _ = _paths(request)
+    if not editor.delete_server(config_path, name):
+        raise HTTPException(404, "Unbekannter Server")
+    return await _apply(request)
+
+
+@router.post("/mcp/config/import")
+async def import_config(request: Request, snippet: dict[str, Any]):
+    """JSON aus Claude Code / Claude Desktop übernehmen ({"mcpServers": {...}})."""
+    config_path, _ = _paths(request)
+    try:
+        names = editor.import_servers(config_path, snippet)
+    except ConfigError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"imported": names, **(await _apply(request))}
+
+
+@router.put("/mcp/secrets/{name}")
+async def put_secret(request: Request, name: str, body: SecretBody):
+    _, secrets_path = _paths(request)
+    if not secrets_path:
+        raise HTTPException(400, "MCP_SECRETS ist nicht gesetzt")
+    try:
+        editor.set_secret(secrets_path, name, body.value)
+    except ConfigError as e:
+        raise HTTPException(400, str(e)) from e
+    await _apply(request)
+    return {"name": name, "set": True}
+
+
+@router.delete("/mcp/secrets/{name}")
+async def delete_secret(request: Request, name: str):
+    _, secrets_path = _paths(request)
+    if not secrets_path:
+        raise HTTPException(400, "MCP_SECRETS ist nicht gesetzt")
+    editor.set_secret(secrets_path, name, None)
+    await _apply(request)
+    return {"name": name, "set": False}
