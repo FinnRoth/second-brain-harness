@@ -203,8 +203,27 @@ async def list_facts(
     entity_id: int | None = None,
     include_inactive: bool = False,
     limit: int = 200,
+    offset: int = 0,
+    order: str = "recent",
+    category: str | None = None,
+    min_importance: int = 1,
 ):
-    return get_services(request).store.list_facts(entity_id, q, include_inactive, limit=limit)
+    return get_services(request).store.list_facts(
+        entity_id,
+        q,
+        include_inactive,
+        min_importance=min_importance,
+        order=order,
+        limit=min(limit, 1000),
+        category=category,
+        offset=offset,
+    )
+
+
+@router.get("/categories")
+async def fact_categories(request: Request):
+    """Kategorien aktiver Fakten mit Anzahl (für Filter)."""
+    return get_services(request).store.fact_categories()
 
 
 @router.get("/search")

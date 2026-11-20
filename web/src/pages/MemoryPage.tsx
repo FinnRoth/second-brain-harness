@@ -56,16 +56,73 @@ function useLoader<T>(fn: () => Promise<T>, deps: unknown[], onAuthError: () => 
   return { data, error, reload, setData };
 }
 
-function FactRow({ fact, onChanged }: { fact: Fact; onChanged: () => void }) {
+const CATEGORY_LABELS: Record<string, string> = {
+  antwortstil: "Antwortstil",
+  persoenlich: "Persönlich",
+  lebenssituation: "Lebenssituation",
+  arbeit: "Arbeit",
+  projekt: "Projekt",
+  person: "Person",
+  idee: "Idee",
+  ambition: "Ambition",
+  ziel: "Ziel",
+  strategie: "Strategie",
+  entscheidung: "Entscheidung",
+  praeferenz: "Präferenz",
+  gesundheit: "Gesundheit",
+  finanzen: "Finanzen",
+  beziehung: "Beziehung",
+  todo: "To-do",
+  wissen: "Wissen",
+  sonstiges: "Sonstiges",
+};
+const catLabel = (c: string) => CATEGORY_LABELS[c] ?? c;
+
+function Importance({ value }: { value: number }) {
+  return (
+    <span className="importance" title={`Wichtigkeit ${value} von 5`}>
+      {[1, 2, 3, 4, 5].map((i) => (
+        <span key={i} className={i <= value ? "on" : ""} />
+      ))}
+    </span>
+  );
+}
+
+function FactRow({
+  fact,
+  onChanged,
+  onEntity,
+  hideEntity,
+}: {
+  fact: Fact;
+  onChanged: () => void;
+  onEntity?: (id: number) => void;
+  hideEntity?: number;
+}) {
   const inactive = fact.status !== "active";
+  const entities = (fact.entities || []).filter((e) => e.id !== hideEntity && e.type !== "self");
   return (
     <div className={`fact-row${inactive ? " inactive" : ""}`}>
       <div className="fact-text">
+        {fact.pinned && <Pin size={12} className="pin-mark" />}
         {fact.content}
         <div className="fact-meta">
-          {fmtDate(fact.created_at)} · {fact.category}
-          {fact.status === "superseded" && " · abgelöst"}
-          {fact.status === "deleted" && " · gelöscht"}
+          <Importance value={fact.importance} />
+          <span>{fmtDate(fact.created_at)}</span>
+          <span>· {catLabel(fact.category)}</span>
+          {fact.status === "superseded" && <span>· abgelöst</span>}
+          {fact.status === "deleted" && <span>· gelöscht</span>}
+          {entities.map((e) =>
+            onEntity ? (
+              <button key={e.id} className="entity-chip" onClick={() => onEntity(e.id)}>
+                {e.name}
+              </button>
+            ) : (
+              <span key={e.id} className="entity-chip">
+                {e.name}
+              </span>
+            ),
+          )}
         </div>
       </div>
       {!inactive && (
@@ -96,7 +153,16 @@ function FactRow({ fact, onChanged }: { fact: Fact; onChanged: () => void }) {
   );
 }
 
-function Overview({ onAuthError }: { onAuthError: () => void }) {
+function Overview({
+  onAuthError,
+  onShowAll,
+  onEntity,
+}: {
+  onAuthError: () => void;
+  onShowAll: () => void;
+  onEntity: (id: number) => void;
+}) {
+  const recent = useLoader<Fact[]>(() => request("GET", "/memory/facts?limit=8"), [], onAuthError);
   const profile = useLoader(() => request("GET", "/memory/profile"), [], onAuthError);
   const stats = useLoader(() => request("GET", "/memory/stats"), [], onAuthError);
   const [editing, setEditing] = useState<string | null>(null);
@@ -180,6 +246,120 @@ function Overview({ onAuthError }: { onAuthError: () => void }) {
           </p>
         )}
       </div>
+      <div className="card list">
+        <div className="list-title row">
+          <span>Zuletzt gelernt</span>
+          <span className="grow" />
+          <button className="btn small" onClick={onShowAll}>
+            Alle Erinnerungen
+          </button>
+        </div>
+        {recent.data?.length ? (
+          recent.data.map((f) => <FactRow key={f.id} fact={f} onChanged={recent.reload} onEntity={onEntity} />)
+        ) : (
+          <div className="muted pad">Noch nichts gelernt – das passiert automatisch nach euren Gesprächen.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const PAGE = 100;
+
+function AllFacts({ onAuthError, onEntity }: { onAuthError: () => void; onEntity: (id: number) => void }) {
+  const [q, setQ] = useState("");
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState("");
+  const [order, setOrder] = useState<"recent" | "importance">("recent");
+  const [history, setHistory] = useState(false);
+  const [facts, setFacts] = useState<Fact[]>([]);
+  const [more, setMore] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const cats = useLoader<{ category: string; n: number }[]>(() => request("GET", "/memory/categories"), [], onAuthError);
+
+  useEffect(() => {
+    const t = setTimeout(() => setQuery(q.trim()), 250);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const load = useCallback(
+    async (offset: number) => {
+      setLoading(true);
+      const params = new URLSearchParams({ limit: String(PAGE), offset: String(offset), order });
+      if (query) params.set("q", query);
+      if (category) params.set("category", category);
+      if (history) params.set("include_inactive", "true");
+      try {
+        const page = await request<Fact[]>("GET", `/memory/facts?${params}`);
+        setFacts((prev) => (offset ? [...prev, ...page] : page));
+        setMore(page.length === PAGE);
+      } catch (e) {
+        if (e instanceof AuthError) onAuthError();
+      } finally {
+        setLoading(false);
+      }
+    },
+    [query, category, order, history, onAuthError],
+  );
+
+  useEffect(() => {
+    load(0);
+  }, [load]);
+
+  const total = (cats.data ?? []).reduce((a, c) => a + c.n, 0);
+  return (
+    <div className="mem-section">
+      <div className="toolbar">
+        <div className="search boxed grow">
+          <Search size={15} />
+          <input placeholder="Erinnerungen durchsuchen" value={q} onChange={(e) => setQ(e.target.value)} />
+          {q && (
+            <button className="icon-btn small" onClick={() => setQ("")}>
+              <X size={14} />
+            </button>
+          )}
+        </div>
+        <select className="select" value={order} onChange={(e) => setOrder(e.target.value as "recent" | "importance")}>
+          <option value="recent">Neueste zuerst</option>
+          <option value="importance">Wichtigste zuerst</option>
+        </select>
+        <label className="toggle small">
+          <input type="checkbox" checked={history} onChange={(e) => setHistory(e.target.checked)} /> Historie
+        </label>
+      </div>
+      <div className="chips">
+        <button className={`chip${category === "" ? " active" : ""}`} onClick={() => setCategory("")}>
+          Alle <span className="chip-count">{total}</span>
+        </button>
+        {cats.data?.map((c) => (
+          <button
+            key={c.category}
+            className={`chip${category === c.category ? " active" : ""}`}
+            onClick={() => setCategory(c.category)}
+          >
+            {catLabel(c.category)} <span className="chip-count">{c.n}</span>
+          </button>
+        ))}
+      </div>
+      <div className="card list">
+        {facts.map((f) => (
+          <FactRow
+            key={f.id}
+            fact={f}
+            onEntity={onEntity}
+            onChanged={() => {
+              load(0);
+              cats.reload();
+            }}
+          />
+        ))}
+        {!facts.length && !loading && <div className="muted pad">Keine Erinnerungen gefunden.</div>}
+      </div>
+      {more && (
+        <button className="btn" disabled={loading} onClick={() => load(facts.length)}>
+          Mehr laden
+        </button>
+      )}
     </div>
   );
 }
@@ -316,7 +496,7 @@ function EntityDetail({ id, onBack, onAuthError }: { id: number; onBack: () => v
       </div>
       <div className="card list">
         {facts.length ? (
-          facts.map((f) => <FactRow key={f.id} fact={f} onChanged={ent.reload} />)
+          facts.map((f) => <FactRow key={f.id} fact={f} onChanged={ent.reload} hideEntity={id} />)
         ) : (
           <div className="muted pad">Keine Fakten.</div>
         )}
@@ -325,10 +505,17 @@ function EntityDetail({ id, onBack, onAuthError }: { id: number; onBack: () => v
   );
 }
 
-function Knowledge({ onAuthError }: { onAuthError: () => void }) {
+function Knowledge({
+  onAuthError,
+  selected,
+  setSelected,
+}: {
+  onAuthError: () => void;
+  selected: number | null;
+  setSelected: (id: number | null) => void;
+}) {
   const [type, setType] = useState("person");
   const [q, setQ] = useState("");
-  const [selected, setSelected] = useState<number | null>(null);
   const list = useLoader<Entity[]>(
     () => request("GET", `/memory/entities?type=${type}${q ? `&q=${encodeURIComponent(q)}` : ""}`),
     [type, q],
@@ -380,7 +567,12 @@ function Knowledge({ onAuthError }: { onAuthError: () => void }) {
 }
 
 export function MemoryPage({ onAuthError }: { onAuthError: () => void }) {
-  const [tab, setTab] = useState<"overview" | "saved" | "knowledge">("overview");
+  const [tab, setTab] = useState<"overview" | "facts" | "saved" | "knowledge">("overview");
+  const [entity, setEntity] = useState<number | null>(null);
+  const openEntity = (id: number) => {
+    setEntity(id);
+    setTab("knowledge");
+  };
   return (
     <div className="page">
       <header className="page-header">
@@ -389,18 +581,30 @@ export function MemoryPage({ onAuthError }: { onAuthError: () => void }) {
           <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>
             Zusammenfassung
           </button>
+          <button className={tab === "facts" ? "active" : ""} onClick={() => setTab("facts")}>
+            Erinnerungen
+          </button>
           <button className={tab === "saved" ? "active" : ""} onClick={() => setTab("saved")}>
             Gespeichert
           </button>
-          <button className={tab === "knowledge" ? "active" : ""} onClick={() => setTab("knowledge")}>
-            Wissen
+          <button
+            className={tab === "knowledge" ? "active" : ""}
+            onClick={() => {
+              setEntity(null);
+              setTab("knowledge");
+            }}
+          >
+            Personen & Projekte
           </button>
         </div>
       </header>
       <div className="page-body">
-        {tab === "overview" && <Overview onAuthError={onAuthError} />}
+        {tab === "overview" && (
+          <Overview onAuthError={onAuthError} onShowAll={() => setTab("facts")} onEntity={openEntity} />
+        )}
+        {tab === "facts" && <AllFacts onAuthError={onAuthError} onEntity={openEntity} />}
         {tab === "saved" && <Saved onAuthError={onAuthError} />}
-        {tab === "knowledge" && <Knowledge onAuthError={onAuthError} />}
+        {tab === "knowledge" && <Knowledge onAuthError={onAuthError} selected={entity} setSelected={setEntity} />}
       </div>
     </div>
   );

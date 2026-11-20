@@ -428,6 +428,9 @@ class MemoryStore:
         min_importance: int = 1,
         order: str = "recent",
         limit: int = 200,
+        category: str | None = None,
+        pinned_only: bool = False,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         sql = "SELECT f.* FROM facts f"
         params: list[Any] = []
@@ -441,14 +444,25 @@ class MemoryStore:
         if q:
             sql += " AND f.content LIKE ?"
             params.append(f"%{q}%")
+        if category:
+            sql += " AND f.category=?"
+            params.append(category)
+        if pinned_only:
+            sql += " AND f.pinned=1"
         sql += (
             " ORDER BY f.importance DESC, f.updated_at DESC"
             if order == "importance"
             else " ORDER BY f.created_at DESC, f.id DESC"
         )
-        sql += " LIMIT ?"
-        params.append(limit)
+        sql += " LIMIT ? OFFSET ?"
+        params += [limit, max(0, offset)]
         return self._attach_entities([_fact(r) for r in self.db.query(sql, tuple(params))])
+
+    def fact_categories(self) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT category, COUNT(*) AS n FROM facts WHERE status='active' GROUP BY category ORDER BY n DESC"
+        )
+        return [dict(r) for r in rows]
 
     def search_facts_fts(self, text: str, limit: int = 40) -> list[tuple[int, float]]:
         q = fts_query(text)

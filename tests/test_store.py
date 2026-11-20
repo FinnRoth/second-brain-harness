@@ -69,3 +69,17 @@ def test_merge_entities(tmp_path):
     assert "Maximilian Müller" in s.get_entity(a)["aliases"]
     assert [e["id"] for e in s.get_fact(f)["entities"]] == [a]
     assert s.relations_for_entity(a)[0]["target_id"] == org
+
+
+def test_list_facts_filters_and_paging(tmp_path):
+    s = make_store(tmp_path)
+    me = s.self_id()
+    for i in range(5):
+        s.add_fact(f"Arbeitsfakt {i}", [me], "arbeit", importance=1 + i)
+    s.add_fact("Mag Kaffee", [me], "praeferenz", importance=2)
+    assert len(s.list_facts(category="arbeit")) == 5
+    assert [f["importance"] for f in s.list_facts(category="arbeit", order="importance", limit=2)] == [5, 4]
+    assert [f["importance"] for f in s.list_facts(category="arbeit", order="importance", limit=2, offset=2)] == [3, 2]
+    assert len(s.list_facts(min_importance=4)) == 2
+    cats = {c["category"]: c["n"] for c in s.fact_categories()}
+    assert cats == {"arbeit": 5, "praeferenz": 1}

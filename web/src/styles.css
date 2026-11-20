@@ -1606,3 +1606,57 @@ textarea.input {
 .switch input:checked + span::after {
   transform: translateX(14px);
 }
+
+/* ------------------------------------------------------- Erinnerungen */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.toolbar .search {
+  min-width: 220px;
+}
+.chip-count {
+  opacity: 0.6;
+  font-size: 12px;
+  margin-left: 3px;
+}
+.fact-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}
+.importance {
+  display: inline-flex;
+  gap: 2px;
+  margin-right: 2px;
+}
+.importance span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.importance span.on {
+  background: var(--accent);
+}
+.entity-chip {
+  font-size: 12px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  line-height: 18px;
+}
+button.entity-chip:hover {
+  filter: brightness(0.95);
+  text-decoration: underline;
+}
+.pin-mark {
+  color: var(--accent);
+  margin-right: 5px;
+  vertical-align: -1px;
+}
