@@ -9,6 +9,7 @@ import {
   PinOff,
   Plug,
   Search,
+  Settings,
   SquarePen,
   Trash2,
 } from "lucide-react";
@@ -189,6 +190,12 @@ export function Sidebar({
         </button>
         <button className={`nav-item${route === "#/tools" ? " active" : ""}`} onClick={() => onNavigate("#/tools")}>
           <Plug size={17} /> Tools & MCP
+        </button>
+        <button
+          className={`nav-item${route === "#/settings" ? " active" : ""}`}
+          onClick={() => onNavigate("#/settings")}
+        >
+          <Settings size={17} /> Einstellungen
         </button>
       </div>
     </aside>

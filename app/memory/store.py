@@ -831,6 +831,69 @@ class MemoryStore:
                     )
         return len(turns)
 
+    # ------------------------------------------- Eigene Anweisungen & Nachschlagewerke
+    def get_custom_instructions(self) -> str:
+        return self.get_meta("custom_instructions", "") or ""
+
+    def set_custom_instructions(self, text: str) -> None:
+        self.set_meta("custom_instructions", text.strip())
+
+    @staticmethod
+    def _ref(row, with_content: bool = True) -> dict[str, Any]:
+        d = dict(row)
+        d["enabled"] = bool(d["enabled"])
+        d["chars"] = len(d.get("content") or "")
+        if not with_content:
+            d.pop("content", None)
+        return d
+
+    def list_reference_docs(self, with_content: bool = False, enabled_only: bool = False) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM reference_docs" + (" WHERE enabled=1" if enabled_only else "") + " ORDER BY title COLLATE NOCASE"
+        return [self._ref(r, with_content) for r in self.db.query(sql)]
+
+    def get_reference_doc(self, doc_id: int) -> dict[str, Any] | None:
+        row = self.db.query_one("SELECT * FROM reference_docs WHERE id=?", (doc_id,))
+        return self._ref(row) if row else None
+
+    def find_reference_doc(self, ref: str | int) -> dict[str, Any] | None:
+        """Per ID („R3“, „3“) oder Titel (exakt, sonst Teilstring) – nur aktivierte."""
+        s = str(ref).strip()
+        m = re.fullmatch(r"[Rr]?(\d+)", s)
+        if m:
+            doc = self.get_reference_doc(int(m.group(1)))
+            if doc and doc["enabled"]:
+                return doc
+        docs = self.list_reference_docs(with_content=True, enabled_only=True)
+        low = s.lower()
+        for d in docs:
+            if d["title"].lower() == low:
+                return d
+        hits = [d for d in docs if low and (low in d["title"].lower() or d["title"].lower() in low)]
+        return hits[0] if len(hits) == 1 else None
+
+    def create_reference_doc(self, title: str, description: str, content: str, mode: str, enabled: bool = True) -> int:
+        now = utcnow()
+        cur = self.db.execute(
+            "INSERT INTO reference_docs (title, description, content, mode, enabled, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (title.strip(), description.strip(), content, mode, 1 if enabled else 0, now, now),
+        )
+        return cur.lastrowid
+
+    def update_reference_doc(self, doc_id: int, **fields: Any) -> dict[str, Any] | None:
+        allowed = {"title", "description", "content", "mode", "enabled"}
+        sets = {k: v for k, v in fields.items() if k in allowed and v is not None}
+        if sets:
+            values = [int(v) if isinstance(v, bool) else (v.strip() if k in ("title", "description") else v) for k, v in sets.items()]
+            cols = ", ".join(f"{k}=?" for k in sets)
+            self.db.execute(
+                f"UPDATE reference_docs SET {cols}, updated_at=? WHERE id=?", (*values, utcnow(), doc_id)
+            )
+        return self.get_reference_doc(doc_id)
+
+    def delete_reference_doc(self, doc_id: int) -> bool:
+        return self.db.execute("DELETE FROM reference_docs WHERE id=?", (doc_id,)).rowcount > 0
+
     # ------------------------------------------------------------ Tool-Regeln
     def tool_policies(self) -> dict[str, str]:
         rows = self.db.query("SELECT key, value FROM meta WHERE key LIKE 'tool_policy:%'")

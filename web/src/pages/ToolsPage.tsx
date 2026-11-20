@@ -142,12 +142,12 @@ export function ToolsPage({ onAuthError }: { onAuthError: () => void }) {
           </p>
           {grouped.map(([source, list]) => (
             <div key={source} className="card list">
-              <div className="list-title">{source === "gedächtnis" ? "Gedächtnis" : source.replace("mcp:", "MCP · ")}</div>
+              <div className="list-title">{source === "gedächtnis" ? "Gedächtnis" : source === "nachschlagewerke" ? "Nachschlagewerke" : source.replace("mcp:", "MCP · ")}</div>
               {list.map((t) => (
                 <div key={t.name} className="tool-row">
                   <div className="tool-row-text">
                     <div>
-                      <b>{t.source === "gedächtnis" ? (MEMORY_LABELS[t.name] ?? t.title) : t.title}</b>{" "}
+                      <b>{t.source.startsWith("mcp:") ? t.title : (MEMORY_LABELS[t.name] ?? t.title)}</b>{" "}
                       <span className={`kind kind-${t.kind}`}>{KIND[t.kind]}</span>
                     </div>
                     <div className="muted small ellipsis" title={t.description}>

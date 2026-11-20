@@ -120,8 +120,42 @@ class PromptBuilder:
             saved_memories=saved,
             recent_chats=self.recent_chats_block(conversation_id),
             tools_section=f"\n## Verbundene Tools (MCP)\n{tools_section}\n" if tools_section else "",
+            custom_instructions=self.custom_instructions_block(),
+            references=self.references_block(),
         )
         return text, saved_ids
+
+    def custom_instructions_block(self) -> str:
+        text = self.store.get_custom_instructions()
+        if not text:
+            return ""
+        user = self.settings.user_name
+        return (
+            f"\n## Persönliche Anweisungen von {user}\n"
+            f"Diese Anweisungen hat {user} selbst in den Einstellungen festgelegt. Befolge sie.\n\n{text}\n"
+        )
+
+    def references_block(self) -> str:
+        docs = self.store.list_reference_docs(with_content=True, enabled_only=True)
+        if not docs:
+            return ""
+        always = [d for d in docs if d["mode"] == "always"]
+        on_demand = [d for d in docs if d["mode"] != "always"]
+        out = ["\n## Nachschlagewerke", f"Von {self.settings.user_name} hinterlegte Referenzen. Nutze sie, wenn sie zur Frage passen."]
+        for d in always:
+            out.append(f"\n### {d['title']}")
+            if d["description"]:
+                out.append(f"_{d['description']}_")
+            out.append(d["content"].strip())
+        if on_demand:
+            out.append(
+                "\nWeitere Nachschlagewerke – bei Bedarf mit `read_reference` laden "
+                "(mit `query` nur die passenden Stellen, z. B. ein Stichwort):"
+            )
+            for d in on_demand:
+                desc = f": {d['description']}" if d["description"] else ""
+                out.append(f"- **{d['title']}** (R{d['id']}, ~{max(1, d['chars'] // 4)} Tokens){desc}")
+        return "\n".join(out) + "\n"
 
     # ---------------------------------------------------------- dynamischer Teil
     async def turn_context(self, messages: list[dict[str, Any]], exclude_fact_ids: set[int]) -> TurnContext:

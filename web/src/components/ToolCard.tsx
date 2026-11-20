@@ -1,6 +1,7 @@
 import {
   Ban,
   BookOpen,
+  BookText,
   Brain,
   Check,
   ChevronRight,
@@ -24,6 +25,7 @@ export const MEMORY_LABELS: Record<string, string> = {
   forget_fact: "Vergessen",
   update_entity: "Eintrag aktualisiert",
   tool_search: "Tools gesucht",
+  read_reference: "Nachgeschlagen",
 };
 
 function summary(part: ToolPart): string {
@@ -51,6 +53,7 @@ function StatusIcon({ status }: { status: ToolPart["status"] }) {
 
 function SourceIcon({ part }: { part: ToolPart }) {
   if (part.name === "tool_search") return <Search size={15} />;
+  if (part.name === "read_reference") return <BookText size={15} />;
   if (part.source.startsWith("mcp:")) return <Plug size={15} />;
   if (part.name === "remember" || part.name === "forget_fact" || part.name === "update_entity")
     return <Brain size={15} />;

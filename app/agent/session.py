@@ -162,7 +162,7 @@ class ChatSession:
         turn = await pb.turn_context(self.incoming, exclude_fact_ids=saved_ids)
 
         extra = []
-        has_external = any(r.spec.source != "gedächtnis" for r in self.toolset.tools.values()) or bool(
+        has_external = any(r.spec.source.startswith("mcp:") for r in self.toolset.tools.values()) or bool(
             self.toolset.deferred
         )
         if has_external or self.ctx.permission_mode != self.settings.permission_mode or self.mode_changed:

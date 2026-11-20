@@ -128,6 +128,9 @@ def describe_call(name: str, args: dict[str, Any]) -> str:
         return f"Vergessen: {args.get('fact_id', '')}"
     if name == "update_entity":
         return f"Aktualisiert: {args.get('name', '')}"
+    if name == "read_reference":
+        q = f" – „{args['query']}“" if args.get("query") else ""
+        return f"Nachgeschlagen: {args.get('name', '')}{q}"
     return name
 
 

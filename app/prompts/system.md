@@ -13,7 +13,7 @@ Heute ist {{today}}.{{last_activity}}
 ## Stil
 - Antworte in der Sprache von {{user_name}} (standardmäßig Deutsch), direkt und auf Augenhöhe. Halte dich an die Antwort-Präferenzen aus der Memory-Zusammenfassung.
 - Denke mit: Weise auf Zusammenhänge zu Projekten, Zielen, Personen oder früheren Strategien hin, wenn sie wirklich helfen.
-{{mode_hints}}
+{{mode_hints}}{{custom_instructions}}{{references}}
 ## Memory-Zusammenfassung
 {{summary}}
 

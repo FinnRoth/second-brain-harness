@@ -59,6 +59,26 @@ class ApprovalDecision(BaseModel):
     scope: Literal["once", "chat", "always"] = "once"
 
 
+class SettingsUpdate(BaseModel):
+    custom_instructions: str
+
+
+class ReferenceIn(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = ""
+    content: str = ""
+    mode: Literal["always", "on_demand"] = "on_demand"
+    enabled: bool = True
+
+
+class ReferencePatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+    content: str | None = None
+    mode: Literal["always", "on_demand"] | None = None
+    enabled: bool | None = None
+
+
 class PolicyUpdate(BaseModel):
     policy: Literal["allow", "ask", "deny"] | None = None
 
@@ -273,3 +293,59 @@ async def tools(request: Request):
 async def set_policy(request: Request, name: str, body: PolicyUpdate):
     get_services(request).store.set_tool_policy(name, body.policy)
     return {"name": name, "policy": body.policy}
+
+
+# ------------------------------------------------- Eigene Anweisungen & Nachschlagewerke
+MAX_REFERENCE_CHARS = 2_000_000
+
+
+@router.get("/settings")
+async def get_settings_(request: Request):
+    s = get_services(request)
+    return {"custom_instructions": s.store.get_custom_instructions()}
+
+
+@router.put("/settings")
+async def put_settings(request: Request, body: SettingsUpdate):
+    s = get_services(request)
+    s.store.set_custom_instructions(body.custom_instructions)
+    return {"custom_instructions": s.store.get_custom_instructions()}
+
+
+@router.get("/references")
+async def list_references(request: Request):
+    return get_services(request).store.list_reference_docs()
+
+
+@router.post("/references", status_code=201)
+async def create_reference(request: Request, body: ReferenceIn):
+    if len(body.content) > MAX_REFERENCE_CHARS:
+        raise HTTPException(400, "Dokument ist zu groß (max. 2 Mio. Zeichen)")
+    store = get_services(request).store
+    rid = store.create_reference_doc(body.title, body.description, body.content, body.mode, body.enabled)
+    return store.get_reference_doc(rid)
+
+
+@router.get("/references/{doc_id}")
+async def get_reference(request: Request, doc_id: int):
+    doc = get_services(request).store.get_reference_doc(doc_id)
+    if not doc:
+        raise HTTPException(404, "Nicht gefunden")
+    return doc
+
+
+@router.patch("/references/{doc_id}")
+async def patch_reference(request: Request, doc_id: int, body: ReferencePatch):
+    store = get_services(request).store
+    if not store.get_reference_doc(doc_id):
+        raise HTTPException(404, "Nicht gefunden")
+    if body.content is not None and len(body.content) > MAX_REFERENCE_CHARS:
+        raise HTTPException(400, "Dokument ist zu groß (max. 2 Mio. Zeichen)")
+    return store.update_reference_doc(doc_id, **body.model_dump())
+
+
+@router.delete("/references/{doc_id}")
+async def delete_reference(request: Request, doc_id: int):
+    if not get_services(request).store.delete_reference_doc(doc_id):
+        raise HTTPException(404, "Nicht gefunden")
+    return {"deleted": doc_id}

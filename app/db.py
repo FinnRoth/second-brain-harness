@@ -191,6 +191,19 @@ MIGRATIONS: list[str] = [
     ALTER TABLE conversations ADD COLUMN allowed_tools TEXT NOT NULL DEFAULT '[]';
     ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
     """,
+    # --- v4: eigene Anweisungen & Nachschlagewerke (nur lokal) -------------------
+    """
+    CREATE TABLE reference_docs (
+        id          INTEGER PRIMARY KEY,
+        title       TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        content     TEXT NOT NULL DEFAULT '',
+        mode        TEXT NOT NULL DEFAULT 'on_demand',
+        enabled     INTEGER NOT NULL DEFAULT 1,
+        created_at  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL
+    );
+    """,
 ]
 
 

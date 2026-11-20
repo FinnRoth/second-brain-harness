@@ -21,6 +21,7 @@ from .memory.store import MemoryStore
 from .responses_api import ResponsesBackend
 from .tools.mcp import MCPToolProvider
 from .tools.memory import MemoryToolProvider
+from .tools.references import ReferenceToolProvider
 from .tools.registry import ToolRegistry
 from .agent.runs import RunManager
 
@@ -51,7 +52,11 @@ class Services:
             watch_interval=settings.mcp_watch_interval,
         )
         self.tools = ToolRegistry(
-            [MemoryToolProvider(self.store, self.retriever), MCPToolProvider(self.mcp, settings.mcp_max_output_chars)],
+            [
+                MemoryToolProvider(self.store, self.retriever),
+                ReferenceToolProvider(self.store),
+                MCPToolProvider(self.mcp, settings.mcp_max_output_chars),
+            ],
             search_threshold=settings.tool_search_threshold,
             policy_overrides=self.store.tool_policies,
         )

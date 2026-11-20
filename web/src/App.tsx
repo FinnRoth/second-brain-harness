@@ -5,6 +5,7 @@ import { KeyPrompt } from "./components/KeyPrompt";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./pages/ChatView";
 import { MemoryPage } from "./pages/MemoryPage";
+import { SettingsPage } from "./pages/SettingsPage";
 import { ToolsPage } from "./pages/ToolsPage";
 import type { AppConfig, ChatSummary } from "./types";
 
@@ -129,6 +130,8 @@ export default function App() {
           <MemoryPage onAuthError={() => setNeedsKey(true)} />
         ) : route === "#/tools" ? (
           <ToolsPage onAuthError={() => setNeedsKey(true)} />
+        ) : route === "#/settings" ? (
+          <SettingsPage onAuthError={() => setNeedsKey(true)} />
         ) : (
           <ChatView
             key={`view-${newChatKey}`}

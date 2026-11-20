@@ -84,6 +84,13 @@ launchctl kickstart -k gui/$(id -u)/com.secondbrain.harness
   - gespeicherte Erinnerungen verwalten
   - Personen, Projekte, Ideen usw. mit allen Fakten und deren Historie durchstöbern
 - **Tools & MCP:** Status, Logs und Neustart der MCP-Server. Pro Tool kannst du festlegen: Immer erlauben, Immer fragen oder Blockieren.
+- **Einstellungen:**
+  - **Eigene Anweisungen** stehen in jedem Chat.
+  - **Nachschlagewerke** sind Verzeichnisse, Glossare oder interne Link-Listen mit Beschreibung. Pro Dokument wählst du:
+    - *Immer im Kontext:* Der komplette Inhalt steht in jedem Chat.
+    - *Bei Bedarf:* Im Chat stehen nur Titel und Beschreibung. Der Assistent sucht mit `read_reference` gezielt darin.
+
+  Beides liegt nur lokal in `data/brain.db`, nicht im Repo und nicht im Gedächtnis-Export.
 
 Tastenkürzel: `⌘⇧O` öffnet einen neuen Chat, `⌘\` blendet die Seitenleiste ein und aus. Mit `Enter` sendest du, mit `Shift+Enter` beginnt eine neue Zeile.
 
