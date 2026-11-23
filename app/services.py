@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from .config import Settings
@@ -24,6 +25,7 @@ from .tools.memory import MemoryToolProvider
 from .tools.references import ReferenceToolProvider
 from .tools.registry import ToolRegistry
 from .agent.runs import RunManager
+from .usage import ModelCatalog, TrackedLLM, UsageLog
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +35,10 @@ class Services:
         self.settings = settings
         self.db = Database(settings.db_path)
         self.store = MemoryStore(self.db)
-        self.llm: LLM = llm or LiteLLMClient(settings)
+        raw_llm: LLM = llm or LiteLLMClient(settings)
+        self.catalog = ModelCatalog(raw_llm, self.db)
+        self.usage_log = UsageLog(self.db)
+        self.llm: LLM = TrackedLLM(raw_llm, self.catalog, self.usage_log)
         self.embedder = Embedder(self.llm, settings)
         self.retriever = Retriever(self.store, self.embedder, settings)
         self.extractor = Extractor(self.store, self.llm, self.retriever, settings)
@@ -81,6 +86,7 @@ class Services:
         if self.settings.enable_worker:
             self.worker.start()
         await self.mcp.start(wait=self.settings.mcp_startup_wait)
+        self._catalog_task = asyncio.create_task(self.catalog.refresh(), name="model-info")
         log.info(
             "Harness bereit – Modelle: %s, Hintergrundmodell: %s, Embeddings: %s",
             ", ".join(self.settings.chat_model_list),

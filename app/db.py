@@ -204,6 +204,22 @@ MIGRATIONS: list[str] = [
         updated_at  TEXT NOT NULL
     );
     """,
+    # --- v5: Token-Verbrauch ------------------------------------------------------
+    """
+    CREATE TABLE usage_log (
+        id                INTEGER PRIMARY KEY,
+        conversation_id   TEXT,
+        kind              TEXT NOT NULL,
+        model             TEXT,
+        prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+        completion_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_tokens     INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens  INTEGER NOT NULL DEFAULT 0,
+        cost              REAL,
+        created_at        TEXT NOT NULL
+    );
+    CREATE INDEX idx_usage_created ON usage_log(created_at);
+    """,
 ]
 
 

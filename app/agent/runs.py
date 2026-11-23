@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import json
 import logging
 import time
 import uuid
@@ -218,12 +219,77 @@ class ChatRepo:
         self.s.store.allow_tool_for_conversation(chat_id, tool)
 
 
-def to_llm_message(m: dict[str, Any]) -> dict[str, Any] | None:
-    """Gespeicherte Nachricht → OpenAI-Nachricht (inkl. Anhängen)."""
-    if m["role"] == "assistant":
+def _tool_result_for_history(p: dict[str, Any], max_chars: int) -> str:
+    status = p.get("status")
+    if status == "denied":
+        return "Vom Nutzer abgelehnt – nicht ausgeführt."
+    if status == "approval":
+        return "Nicht ausgeführt (keine Freigabe erteilt)."
+    if status == "running" and p.get("result") is None:
+        return "Abgebrochen – kein Ergebnis."
+    result = p.get("result") or ""
+    if len(result) > max_chars:
+        result = result[:max_chars] + f"\n[… im Verlauf gekürzt, {len(result) - max_chars} weitere Zeichen]"
+    return result or "(keine Ausgabe)"
+
+
+def assistant_history(m: dict[str, Any], max_result_chars: int = 1500) -> list[dict[str, Any]]:
+    """Frühere Antwort → Nachrichten fürs Modell, inkl. Tool-Aufrufen, Ergebnissen und der
+    Überlegung davor – damit der Assistent später nachvollziehen kann, was er warum getan hat."""
+    parts = m.get("parts") or []
+    if not any(p.get("type") == "tool" for p in parts):
         if not m.get("content") and m.get("status") != "done":
-            return None
-        return {"role": "assistant", "content": m.get("content") or ""}
+            return []
+        return [{"role": "assistant", "content": m.get("content") or ""}]
+    out: list[dict[str, Any]] = []
+    texts: list[str] = []
+    reasoning: list[str] = []
+    calls: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
+
+    def flush() -> None:
+        content = "".join(texts).strip()
+        if reasoning:
+            note = " ".join(" ".join(reasoning).split())[:1500]
+            content = (content + "\n\n" if content else "") + f"[Meine Überlegung vor diesen Tool-Aufrufen: {note}]"
+        out.append({"role": "assistant", "content": content or None, "tool_calls": list(calls)})
+        out.extend(results)
+        texts.clear(), reasoning.clear(), calls.clear(), results.clear()
+
+    for p in parts:
+        t = p.get("type")
+        if t == "tool":
+            cid = f"h{m.get('id', 0)}_{p.get('call_id', len(calls))}"[:64]
+            calls.append(
+                {
+                    "id": cid,
+                    "type": "function",
+                    "function": {"name": p.get("name", "tool"), "arguments": json.dumps(p.get("args") or {}, ensure_ascii=False)},
+                }
+            )
+            results.append({"role": "tool", "tool_call_id": cid, "content": _tool_result_for_history(p, max_result_chars)})
+            continue
+        if calls:
+            flush()
+        if t == "text":
+            texts.append(p.get("text") or "")
+        elif t == "reasoning":
+            reasoning.append(p.get("text") or "")
+    if calls:
+        flush()
+    final = "".join(texts).strip()
+    if final:
+        out.append({"role": "assistant", "content": final})
+    elif out and out[-1]["role"] == "tool":
+        out.append({"role": "assistant", "content": "(Antwort abgebrochen)" if m.get("status") != "done" else ""})
+    return out
+
+
+def to_llm_message(m: dict[str, Any]) -> dict[str, Any] | None:
+    """Gespeicherte Nutzer-Nachricht → OpenAI-Nachricht (inkl. Anhängen)."""
+    if m["role"] == "assistant":
+        msgs = assistant_history(m)
+        return msgs[-1] if msgs else None
     if m["role"] != "user":
         return None
     text = m.get("content") or ""
@@ -371,7 +437,13 @@ class RunManager:
     async def _execute(self, run: Run, params: dict[str, Any]) -> None:
         repo = self.repo
         chat = repo.get(run.chat_id) or {}
-        history = [m for m in (to_llm_message(m) for m in repo.messages(run.chat_id)) if m]
+        history: list[dict[str, Any]] = []
+        detailed = self.s.settings.history_tool_details
+        for m in repo.messages(run.chat_id):
+            if m["role"] == "assistant" and detailed:
+                history.extend(assistant_history(m, self.s.settings.history_tool_result_chars))
+            elif (msg := to_llm_message(m)) is not None:
+                history.append(msg)
         builder = PartsBuilder()
         status, usage = "done", None
         session = ChatSession(
@@ -411,12 +483,14 @@ class RunManager:
                 fut.cancel()
         try:
             text = session.final_text
+            usage = session.usage_summary() or usage
             mid = repo.add_message(
                 run.chat_id, "assistant", text, builder.parts, model=run.model, status=status, usage=usage
             )
             if session.completed or (status == "cancelled" and text.strip()):
                 session.persist(text)
-            run.publish({"type": "saved", "message_id": mid, "status": status})
+            session.record_usage()
+            run.publish({"type": "saved", "message_id": mid, "status": status, "usage": usage})
             if status == "done" and not (repo.get(run.chat_id) or {}).get("title"):
                 title = await self._title(history, text)
                 if title:

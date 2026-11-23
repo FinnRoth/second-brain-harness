@@ -36,6 +36,10 @@ class Settings(BaseSettings):
 
     # Agent
     max_tool_iterations: int = 8
+    # Frühere Tool-Aufrufe (+ Überlegung davor) im Verlauf mitschicken, damit der Assistent
+    # später erklären kann, was er warum getan hat. Ergebnisse werden dafür gekürzt.
+    history_tool_details: bool = True
+    history_tool_result_chars: int = 1500
     # Freigabe-Modus für Tools (plan | ask | auto), pro Chat per /plan, /ask, /auto änderbar
     permission_mode: str = "ask"
     # Ab so vielen Tools bekommt das Modell statt aller Schemas eine Tool-Suche

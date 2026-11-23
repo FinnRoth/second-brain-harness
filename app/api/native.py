@@ -134,10 +134,44 @@ async def get_chat(request: Request, chat_id: str):
     runs = _runs(request)
     chat = _chat_or_404(request, chat_id)
     run = runs.active(chat_id)
+    messages = runs.repo.messages(chat_id)
     return {
         **chat,
-        "messages": runs.repo.messages(chat_id),
+        "messages": messages,
         "active_run": {"id": run.id, "model": run.model} if run else None,
+        "usage": _chat_usage(request, chat, messages),
+    }
+
+
+def _chat_usage(request: Request, chat: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
+    s = get_services(request)
+    prompt = completion = 0
+    cost, priced, unpriced = 0.0, 0, 0
+    context_tokens, model = 0, chat.get("model")
+    for m in messages:
+        u = m.get("usage") if m["role"] == "assistant" else None
+        if not u:
+            continue
+        prompt += u.get("prompt_tokens", 0)
+        completion += u.get("completion_tokens", 0)
+        context_tokens = u.get("context_tokens") or (u.get("prompt_tokens", 0) + u.get("completion_tokens", 0))
+        model = m.get("model") or model
+        if u.get("cost") is None:
+            unpriced += 1
+        else:
+            cost += u["cost"]
+            priced += 1
+    model = model or (s.settings.chat_model_list[0] if s.settings.chat_model_list else None)
+    info = s.catalog.info(model)
+    return {
+        "model": model,
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+        "cost": round(cost, 6) if priced else None,
+        "partially_priced": bool(priced and unpriced),
+        "context_tokens": context_tokens,
+        "context_window": info.get("context_window"),
     }
 
 
@@ -349,3 +383,44 @@ async def delete_reference(request: Request, doc_id: int):
     if not get_services(request).store.delete_reference_doc(doc_id):
         raise HTTPException(404, "Nicht gefunden")
     return {"deleted": doc_id}
+
+
+# ------------------------------------------------------- Modelle, Preise, Verbrauch
+class ModelInfoUpdate(BaseModel):
+    context_window: int | None = Field(default=None, ge=1)
+    input_cost_per_mtok: float | None = Field(default=None, ge=0)
+    output_cost_per_mtok: float | None = Field(default=None, ge=0)
+    cached_cost_per_mtok: float | None = Field(default=None, ge=0)
+
+
+def _model_rows(request: Request) -> list[dict[str, Any]]:
+    s = get_services(request)
+    names = list(dict.fromkeys([*s.settings.chat_model_list, s.settings.effective_background_model]))
+    rows = []
+    for name in names:
+        info = s.catalog.info(name)
+        role = "chat" if name in s.settings.chat_model_list else "hintergrund"
+        if name == s.settings.effective_background_model and role == "chat":
+            role = "chat + hintergrund"
+        rows.append({"model": name, "role": role, **info})
+    return rows
+
+
+@router.get("/models")
+async def models(request: Request, refresh: bool = False):
+    """Kontextfenster und Preise je Modell (von LiteLLM, ggf. manuell überschrieben)."""
+    await get_services(request).catalog.refresh(force=refresh)
+    return _model_rows(request)
+
+
+@router.put("/models/{model:path}")
+async def set_model_info(request: Request, model: str, body: ModelInfoUpdate):
+    s = get_services(request)
+    s.catalog.set_overrides(model, body.model_dump())
+    return {"model": model, **s.catalog.info(model)}
+
+
+@router.get("/usage")
+async def usage(request: Request, days: int = 30):
+    """Verbrauch der letzten Tage – Chats und Hintergrundaufgaben (Dreaming, Titel …)."""
+    return get_services(request).usage_log.summary(max(1, min(days, 365)))

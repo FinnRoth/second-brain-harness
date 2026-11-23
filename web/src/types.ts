@@ -44,6 +44,28 @@ export interface ToolPart {
   result?: string;
 }
 
+export interface Usage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_tokens?: number;
+  reasoning_tokens?: number;
+  total_tokens?: number;
+  context_tokens?: number;
+  calls?: number;
+  cost?: number | null;
+}
+
+export interface ChatUsage {
+  model: string | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost: number | null;
+  partially_priced: boolean;
+  context_tokens: number;
+  context_window: number | null;
+}
+
 export interface Message {
   id: number;
   role: "user" | "assistant";
@@ -51,6 +73,7 @@ export interface Message {
   parts: Part[];
   model?: string | null;
   status: string;
+  usage?: Usage | null;
   created_at: string;
 }
 
@@ -58,6 +81,7 @@ export interface ChatDetail extends ChatSummary {
   messages: Message[];
   active_run: { id: string; model: string } | null;
   allowed_tools: string[];
+  usage?: ChatUsage;
 }
 
 export interface RunEvent {

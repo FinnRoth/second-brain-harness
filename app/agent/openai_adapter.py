@@ -131,6 +131,7 @@ class OpenAIChat:
                 yield self._chunk(with_role({"content": f"\n\n⚠️ Fehler von der LLM-API: {ev['message'][:500]}"}), "stop")
         if self.session.completed:
             self.session.persist()
+        self.session.record_usage()
         yield "data: [DONE]\n\n"
 
     async def complete(self) -> dict[str, Any]:
@@ -159,6 +160,7 @@ class OpenAIChat:
             message["tool_calls"] = client_calls
         if self.session.completed:
             self.session.persist()
+        self.session.record_usage()
         resp: dict[str, Any] = {
             "id": self.completion_id,
             "object": "chat.completion",

@@ -20,6 +20,7 @@ class FakeLLM:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.responses_calls: list[dict[str, Any]] = []
+        self.model_info_rows: list[dict[str, Any]] = []
         self.responses_handler: Callable[[dict[str, Any]], dict[str, Any]] = lambda p: {"content": "OK"}
         self.handler: Callable[[dict[str, Any]], dict[str, Any]] = lambda p: {"content": "OK"}
         self.background: Callable[[dict[str, Any]], dict[str, Any]] = lambda p: {
@@ -130,6 +131,9 @@ class FakeLLM:
                 v[int(hashlib.md5(w[:5].encode()).hexdigest(), 16) % 64] += 1
             out.append(v.tolist())
         return out
+
+    async def model_info(self) -> list[dict[str, Any]]:
+        return self.model_info_rows
 
     async def close(self) -> None:
         pass

@@ -27,6 +27,7 @@ from ..tools.base import ToolContext, ToolResult
 from ..tools.memory import describe_call
 from ..tools.permissions import MODE_DESCRIPTIONS, classify_reply
 from ..tools.registry import TOOL_SEARCH, ToolRegistry, ToolSet, short_args
+from ..usage import summarize_calls
 
 if TYPE_CHECKING:
     from ..services import Services
@@ -130,6 +131,7 @@ class ChatSession:
         self.pre_activity: list[str] = []
         self.messages: list[dict[str, Any]] = []
         self.final_parts: list[str] = []
+        self.usage_calls: list[dict[str, Any]] = []
         self.completed = False
         self.tools_disabled = False
         self._conflict_handled = False
@@ -145,6 +147,21 @@ class ChatSession:
     @property
     def final_text(self) -> str:
         return "".join(self.final_parts)
+
+    def usage_summary(self) -> dict[str, Any] | None:
+        """Verbrauch aller Upstream-Calls dieser Antwort inkl. Kosten (falls Preise bekannt)."""
+        summary = summarize_calls(self.usage_calls)
+        if summary is None:
+            return None
+        summary["cost"] = self.s.catalog.cost(self.upstream_model, summary)
+        return summary
+
+    def record_usage(self) -> None:
+        summary = self.usage_summary()
+        if summary:
+            self.s.usage_log.record(
+                "chat", self.upstream_model, summary, summary.get("cost"), None if self.incognito else self.conversation_id
+            )
 
     # ---------------------------------------------------------------- Vorbereitung
     async def prepare(self) -> None:
@@ -424,7 +441,6 @@ class ChatSession:
     # ------------------------------------------------------------------ Agent-Loop
     async def run(self) -> AsyncIterator[dict[str, Any]]:
         reasoning_sent = False
-        usage: dict[str, Any] | None = None
         try:
             if self.pre_activity:
                 yield {"type": "activity", "lines": list(self.pre_activity)}
@@ -436,9 +452,10 @@ class ChatSession:
                 iteration_text: list[str] = []
                 iteration_reasoning = False
                 raw = None
+                call_usage: dict[str, Any] | None = None
                 async for chunk in self._upstream_stream(allow_internal):
                     if chunk.get("usage"):
-                        usage = chunk["usage"]
+                        call_usage = chunk["usage"]
                     if chunk.get(RAW_KEY):
                         raw = chunk[RAW_KEY]
                     choices = chunk.get("choices") or []
@@ -461,6 +478,8 @@ class ChatSession:
                         self.final_parts.append(delta["content"])  # live, damit ein Abbruch nichts verliert
                         yield {"type": "text", "delta": delta["content"]}
 
+                if call_usage:
+                    self.usage_calls.append(call_usage)
                 calls = acc.result()
                 text = "".join(iteration_text)
                 internal = self.internal_names
@@ -480,7 +499,7 @@ class ChatSession:
                     }
                     finish_reason = "tool_calls"
                 self.completed = True
-                yield {"type": "done", "finish_reason": finish_reason or "stop", "usage": usage}
+                yield {"type": "done", "finish_reason": finish_reason or "stop", "usage": self.usage_summary()}
                 return
         except UpstreamError as e:
             log.error("Upstream-Fehler: %s", e)

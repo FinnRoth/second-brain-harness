@@ -171,6 +171,9 @@ def _usage(u: dict[str, Any] | None) -> dict[str, Any] | None:
     details = u.get("output_tokens_details") or {}
     if details.get("reasoning_tokens") is not None:
         out["completion_tokens_details"] = {"reasoning_tokens": details["reasoning_tokens"]}
+    cached = (u.get("input_tokens_details") or {}).get("cached_tokens")
+    if cached is not None:
+        out["prompt_tokens_details"] = {"cached_tokens": cached}
     return out
 
 

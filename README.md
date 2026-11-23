@@ -89,6 +89,10 @@ launchctl kickstart -k gui/$(id -u)/com.secondbrain.harness
   - **Secrets** verwalten. Die Werte landen in `config/secrets.env` und werden nie angezeigt.
   - Status, Logs und Neustart der Server.
   - Pro Tool festlegen: Immer erlauben, Immer fragen oder Blockieren.
+- **Verbrauch:**
+  - Ein Ring im Eingabefeld zeigt, wie voll das Kontextfenster ist. Ein Klick zeigt Tokens und Kosten des Chats.
+  - Jede Antwort zeigt Modell, Tokens und Kosten.
+  - Kontextfenster und Preise kommen automatisch von LiteLLM (`/model/info`). Für unbekannte Modelle trägst du sie in den Einstellungen ein.
 - **Einstellungen:**
   - **Eigene Anweisungen** stehen in jedem Chat.
   - **Nachschlagewerke** sind Verzeichnisse, Glossare oder interne Link-Listen mit Beschreibung. Pro Dokument wählst du:
@@ -96,6 +100,8 @@ launchctl kickstart -k gui/$(id -u)/com.secondbrain.harness
     - *Bei Bedarf:* Im Chat stehen nur Titel und Beschreibung. Der Assistent sucht mit `read_reference` gezielt darin.
 
   Beides liegt nur lokal in `data/brain.db`, nicht im Repo und nicht im Gedächtnis-Export.
+  - **Modelle & Kosten:** Kontextfenster und Preise je Modell, aus LiteLLM oder manuell.
+  - **Verbrauch:** Tokens und Kosten nach Zeitraum, getrennt nach Chats und Hintergrundaufgaben (Lernen, Titel).
 
 Tastenkürzel: `⌘⇧O` öffnet einen neuen Chat, `⌘\` blendet die Seitenleiste ein und aus. Mit `Enter` sendest du, mit `Shift+Enter` beginnt eine neue Zeile.
 

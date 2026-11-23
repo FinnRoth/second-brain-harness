@@ -1,6 +1,7 @@
 import { ArrowUp, FileText, Image as ImageIcon, Lightbulb, Paperclip, Square, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { AppConfig, Attachment, PermissionMode } from "../types";
+import type { AppConfig, Attachment, ChatUsage, PermissionMode } from "../types";
+import { ContextMeter } from "./ContextMeter";
 import { Dropdown, ModePicker } from "./Pickers";
 
 const TEXT_EXT =
@@ -40,6 +41,7 @@ export function Composer({
   running,
   disabled,
   autoFocus,
+  usage,
 }: {
   config: AppConfig;
   settings: ComposerSettings;
@@ -49,6 +51,7 @@ export function Composer({
   running: boolean;
   disabled?: boolean;
   autoFocus?: boolean;
+  usage?: ChatUsage | null;
 }) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -152,6 +155,7 @@ export function Composer({
         />
         <ModePicker value={settings.mode} onChange={(mode) => onSettings({ mode })} />
         <span className="grow" />
+        <ContextMeter usage={usage} />
         {config.models.length > 1 && (
           <Dropdown
             value={settings.model || config.default_model || ""}

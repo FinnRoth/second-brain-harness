@@ -1,6 +1,7 @@
-import { BookText, Check, FileUp, Lock, Pencil, Plus, Trash2 } from "lucide-react";
+import { BookText, Check, FileUp, Lock, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AuthError, request } from "../api";
+import { fmtCost, fmtTokens } from "../format";
 
 interface RefDoc {
   id: number;
@@ -272,6 +273,203 @@ function References({ onAuthError }: { onAuthError: () => void }) {
   );
 }
 
+interface ModelRow {
+  model: string;
+  role: string;
+  context_window: number | null;
+  input_cost_per_mtok: number | null;
+  output_cost_per_mtok: number | null;
+  cached_cost_per_mtok: number | null;
+  source: Record<string, string | null>;
+  litellm: Record<string, number | null>;
+}
+
+const MODEL_FIELDS: { key: keyof ModelRow; label: string; unit: string }[] = [
+  { key: "context_window", label: "Kontextfenster", unit: "Tokens" },
+  { key: "input_cost_per_mtok", label: "Eingabe", unit: "$ / 1 Mio." },
+  { key: "cached_cost_per_mtok", label: "Eingabe (Cache)", unit: "$ / 1 Mio." },
+  { key: "output_cost_per_mtok", label: "Ausgabe", unit: "$ / 1 Mio." },
+];
+
+function ModelEditorRow({ row, onSaved }: { row: ModelRow; onSaved: () => void }) {
+  const initial = () =>
+    Object.fromEntries(MODEL_FIELDS.map((f) => [f.key, row.source[f.key] === "manuell" ? String(row[f.key] ?? "") : ""]));
+  const [vals, setVals] = useState<Record<string, string>>(initial);
+  const [state, setState] = useState<"idle" | "saved">("idle");
+  const dirty = MODEL_FIELDS.some((f) => vals[f.key] !== initial()[f.key]);
+
+  const save = async () => {
+    const body: Record<string, number | null> = {};
+    for (const f of MODEL_FIELDS) body[f.key] = vals[f.key].trim() === "" ? null : Number(vals[f.key].replace(",", "."));
+    await request("PUT", `/api/models/${encodeURIComponent(row.model)}`, body);
+    setState("saved");
+    setTimeout(() => setState("idle"), 1500);
+    onSaved();
+  };
+
+  return (
+    <tr>
+      <td>
+        <b>{row.model}</b>
+        <span className="src-badge">{row.role}</span>
+      </td>
+      {MODEL_FIELDS.map((f) => {
+        const lite = row.litellm?.[f.key as string];
+        return (
+          <td key={f.key}>
+            <input
+              className="input"
+              inputMode="decimal"
+              value={vals[f.key]}
+              placeholder={lite != null ? String(Math.round(Number(lite) * 1000) / 1000) : "unbekannt"}
+              onChange={(e) => setVals({ ...vals, [f.key]: e.target.value })}
+            />
+            <span className="src-badge">
+              {row.source[f.key] === "manuell" ? "manuell" : lite != null ? "aus LiteLLM" : "–"}
+            </span>
+          </td>
+        );
+      })}
+      <td>
+        <button className="btn small" disabled={!dirty} onClick={save}>
+          {state === "saved" ? <Check size={14} /> : "Speichern"}
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+function ModelsCard({ onAuthError }: { onAuthError: () => void }) {
+  const [rows, setRows] = useState<ModelRow[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(
+    (refresh = false) => {
+      setBusy(true);
+      request<ModelRow[]>("GET", `/api/models${refresh ? "?refresh=true" : ""}`)
+        .then(setRows)
+        .catch((e) => e instanceof AuthError && onAuthError())
+        .finally(() => setBusy(false));
+    },
+    [onAuthError],
+  );
+  useEffect(() => load(), [load]);
+  return (
+    <div className="card list">
+      <div className="list-title row">
+        <span>Modelle & Kosten</span>
+        <span className="grow" />
+        <button className="btn small" disabled={busy} onClick={() => load(true)} title="Werte erneut von LiteLLM holen">
+          <RefreshCw size={13} className={busy ? "spin" : ""} /> Von LiteLLM laden
+        </button>
+      </div>
+      <p className="pad muted small" style={{ paddingBottom: 0 }}>
+        Kontextfenster und Preise kommen automatisch von LiteLLM. Kennt LiteLLM ein Modell nicht (z. B. eigene Deployments),
+        trag die Werte hier ein – leere Felder nutzen wieder den LiteLLM-Wert.
+      </p>
+      <div className="table-scroll">
+        <table className="model-table">
+          <thead>
+            <tr>
+              <th>Modell</th>
+              {MODEL_FIELDS.map((f) => (
+                <th key={f.key}>
+                  {f.label}
+                  <span className="src-badge">{f.unit}</span>
+                </th>
+              ))}
+              <th />
+            </tr>
+          </thead>
+          <tbody>{rows?.map((r) => <ModelEditorRow key={r.model} row={r} onSaved={() => load()} />)}</tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+interface UsageTotals {
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_tokens: number;
+  cost: number | null;
+  calls: number;
+  unpriced: number;
+}
+
+function UsageCard({ onAuthError }: { onAuthError: () => void }) {
+  const [days, setDays] = useState(30);
+  const [data, setData] = useState<{
+    total: UsageTotals;
+    by_kind: (UsageTotals & { kind: string })[];
+    by_model: (UsageTotals & { model: string })[];
+  } | null>(null);
+  useEffect(() => {
+    request("GET", `/api/usage?days=${days}`)
+      .then(setData)
+      .catch((e) => e instanceof AuthError && onAuthError());
+  }, [days, onAuthError]);
+  const kind = (k: string) => data?.by_kind.find((x) => x.kind === k);
+  const tokens = (t?: UsageTotals) => (t ? t.prompt_tokens + t.completion_tokens : 0);
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h3>Verbrauch</h3>
+        <span className="grow" />
+        <select className="select" value={days} onChange={(e) => setDays(Number(e.target.value))}>
+          <option value={1}>Heute</option>
+          <option value={7}>7 Tage</option>
+          <option value={30}>30 Tage</option>
+          <option value={365}>12 Monate</option>
+        </select>
+      </div>
+      {data && (
+        <>
+          <div className="usage-cards">
+            <div className="stat">
+              <b>{fmtCost(data.total.cost)}</b>Kosten gesamt{data.total.unpriced ? " (ohne Preise: teilweise)" : ""}
+            </div>
+            <div className="stat">
+              <b>{fmtTokens(tokens(data.total))}</b>Tokens gesamt
+            </div>
+            <div className="stat">
+              <b>{fmtTokens(tokens(kind("chat")))}</b>in Chats · {fmtCost(kind("chat")?.cost)}
+            </div>
+            <div className="stat">
+              <b>{fmtTokens(tokens(kind("hintergrund")))}</b>Hintergrund (Lernen, Titel) · {fmtCost(kind("hintergrund")?.cost)}
+            </div>
+          </div>
+          {data.by_model.length > 0 && (
+            <div className="table-scroll" style={{ marginTop: 12 }}>
+              <table className="model-table">
+                <thead>
+                  <tr>
+                    <th>Modell</th>
+                    <th>Eingabe</th>
+                    <th>davon Cache</th>
+                    <th>Ausgabe</th>
+                    <th>Kosten</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.by_model.map((m) => (
+                    <tr key={m.model ?? "?"}>
+                      <td>{m.model ?? "–"}</td>
+                      <td>{m.prompt_tokens.toLocaleString("de-DE")}</td>
+                      <td>{m.cached_tokens.toLocaleString("de-DE")}</td>
+                      <td>{m.completion_tokens.toLocaleString("de-DE")}</td>
+                      <td>{fmtCost(m.cost)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export function SettingsPage({ onAuthError }: { onAuthError: () => void }) {
   return (
     <div className="page">
@@ -289,6 +487,8 @@ export function SettingsPage({ onAuthError }: { onAuthError: () => void }) {
           </div>
           <Instructions onAuthError={onAuthError} />
           <References onAuthError={onAuthError} />
+          <ModelsCard onAuthError={onAuthError} />
+          <UsageCard onAuthError={onAuthError} />
         </div>
       </div>
     </div>

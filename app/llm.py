@@ -31,6 +31,8 @@ class LLM(Protocol):
 
     def responses_stream(self, payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]: ...
 
+    async def model_info(self) -> list[dict[str, Any]]: ...
+
     async def close(self) -> None: ...
 
 
@@ -51,6 +53,7 @@ class LiteLLMClient:
             headers=headers,
             timeout=httpx.Timeout(settings.upstream_timeout, connect=10.0),
         )
+        self._include_usage = True
 
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         body = {**payload, "stream": False}
@@ -69,7 +72,37 @@ class LiteLLMClient:
         return await self._post("/v1/responses", payload)
 
     def chat_stream(self, payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
-        return self._stream("/v1/chat/completions", payload)
+        return self._chat_stream_with_usage(payload)
+
+    async def _chat_stream_with_usage(self, payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        """Fordert Token-Zahlen im Stream an; lehnt der Anbieter das ab, ohne erneut versuchen."""
+        if self._include_usage:
+            body = {**payload, "stream_options": {"include_usage": True}}
+            started = False
+            try:
+                async for chunk in self._stream("/v1/chat/completions", body):
+                    started = True
+                    yield chunk
+                return
+            except UpstreamError as e:
+                if started or "stream_options" not in e.message:
+                    raise
+                log.warning("Upstream unterstützt stream_options nicht – Token-Zählung im Stream deaktiviert")
+                self._include_usage = False
+        async for chunk in self._stream("/v1/chat/completions", payload):
+            yield chunk
+
+    async def model_info(self) -> list[dict[str, Any]]:
+        """Modell-Infos von LiteLLM (Kontextfenster, Preise). Leere Liste, wenn nicht verfügbar."""
+        for path in ("/v1/model/info", "/model/info"):
+            try:
+                resp = await self._client.get(path, timeout=15)
+            except httpx.HTTPError:
+                continue
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("data", []) if isinstance(data, dict) else []
+        return []
 
     def responses_stream(self, payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         return self._stream("/v1/responses", payload)

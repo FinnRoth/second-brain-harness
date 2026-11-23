@@ -74,7 +74,8 @@ async def test_forced_responses_streaming_with_tools_and_reasoning(services, cli
     reasoning = "".join(c["choices"][0]["delta"].get("reasoning_content") or "" for c in chunks if c.get("choices"))
     assert "Ich schaue im Gedächtnis nach." in reasoning and "Jetzt weiß ich es." in reasoning
     assert sse_content(r.text).endswith("Max segelt gern.")
-    assert chunks[-1]["usage"]["prompt_tokens"] == 10
+    assert chunks[-1]["usage"]["prompt_tokens"] == 20  # beide Calls des Tool-Loops
+    assert chunks[-1]["usage"]["context_tokens"] == 15  # letzter Prompt + Antwort
     assert not fake_llm.calls  # nichts lief über /chat/completions
 
     first, second = fake_llm.responses_calls

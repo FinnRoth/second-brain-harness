@@ -1786,3 +1786,115 @@ button.entity-chip:hover {
 .field textarea {
   font-weight: 400;
 }
+
+/* --------------------------------------------------------- Verbrauch */
+.context-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.context-meter:hover {
+  background: var(--bg-hover);
+  color: var(--text-soft);
+}
+.context-meter .ring-bg {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 2.5;
+}
+.context-meter .ring-fg {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.4s ease;
+}
+.context-meter.level-mid .ring-fg {
+  stroke: var(--warn);
+}
+.context-meter.level-high .ring-fg {
+  stroke: var(--err);
+}
+.context-meter.level-high {
+  color: var(--err);
+}
+.usage-pop {
+  min-width: 270px;
+  padding: 6px 12px 10px;
+}
+.usage-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 16px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.usage-grid b {
+  text-align: right;
+  font-weight: 600;
+}
+.usage-grid .sub {
+  color: var(--text-faint);
+  font-size: 12px;
+  padding-left: 8px;
+}
+.usage-grid span:nth-child(even).sub {
+  text-align: right;
+}
+.usage-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.usage-hint.warn {
+  color: var(--warn);
+}
+.model-tag {
+  font-variant-numeric: tabular-nums;
+}
+.model-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+.model-table th,
+.model-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+.model-table th {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-faint);
+  background: var(--bg-soft);
+}
+.model-table tr:last-child td {
+  border-bottom: none;
+}
+.model-table .input {
+  padding: 5px 8px;
+  font-size: 13px;
+  max-width: 130px;
+  font-variant-numeric: tabular-nums;
+}
+.table-scroll {
+  overflow-x: auto;
+}
+.src-badge {
+  display: block;
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+.usage-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}

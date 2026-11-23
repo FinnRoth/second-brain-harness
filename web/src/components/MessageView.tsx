@@ -1,6 +1,7 @@
 import { AlertTriangle, Check, ChevronRight, Copy, FileText, Lightbulb, Pencil, RotateCcw } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { Message, Part, ToolPart } from "../types";
+import { fmtCost, fmtTokens } from "../format";
+import type { Message, Part, ToolPart, Usage } from "../types";
 import { Markdown } from "./Markdown";
 import { ToolGroup } from "./ToolCard";
 
@@ -142,12 +143,14 @@ export function AssistantMessage({
   live,
   status,
   model,
+  usage,
   onRegenerate,
 }: {
   parts: Part[];
   live: boolean;
   status?: string;
   model?: string | null;
+  usage?: Usage | null;
   onRegenerate?: () => void;
 }) {
   const text = parts
@@ -201,7 +204,23 @@ export function AssistantMessage({
             </button>
           )}
           {status === "cancelled" && <span className="badge">Abgebrochen</span>}
-          {model && <span className="model-tag">{model}</span>}
+          {model && (
+            <span
+              className="model-tag"
+              title={
+                usage
+                  ? `Eingabe ${usage.prompt_tokens.toLocaleString("de-DE")} · Ausgabe ${usage.completion_tokens.toLocaleString("de-DE")}` +
+                    (usage.cached_tokens ? ` · davon aus Cache ${usage.cached_tokens.toLocaleString("de-DE")}` : "") +
+                    (usage.reasoning_tokens ? ` · Denken ${usage.reasoning_tokens.toLocaleString("de-DE")}` : "") +
+                    (usage.calls && usage.calls > 1 ? ` · ${usage.calls} Modellaufrufe` : "")
+                  : undefined
+              }
+            >
+              {model}
+              {usage && ` · ${fmtTokens((usage.prompt_tokens || 0) + (usage.completion_tokens || 0))} Tokens`}
+              {usage?.cost != null && ` · ${fmtCost(usage.cost)}`}
+            </span>
+          )}
         </div>
       )}
     </div>

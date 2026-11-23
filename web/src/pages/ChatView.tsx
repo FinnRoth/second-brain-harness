@@ -424,6 +424,7 @@ export function ChatView({
                   live={false}
                   status={m.status}
                   model={m.model}
+                  usage={m.usage}
                   onRegenerate={!running && i === lastAssistant ? regenerate : undefined}
                 />
               ),
@@ -452,6 +453,7 @@ export function ChatView({
           onStop={stop}
           running={running}
           autoFocus={!chatId}
+          usage={chat?.usage}
         />
         <div className="composer-hint">
           Enter senden · Shift+Enter neue Zeile · Dateien per Drag & Drop
