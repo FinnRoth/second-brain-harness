@@ -100,6 +100,12 @@ launchctl kickstart -k gui/$(id -u)/com.secondbrain.harness
     - *Bei Bedarf:* Im Chat stehen nur Titel und Beschreibung. Der Assistent sucht mit `read_reference` gezielt darin.
 
   Beides liegt nur lokal in `data/brain.db`, nicht im Repo und nicht im Gedächtnis-Export.
+  - **Export & Import:** MCP-Server, Nachschlagewerke, Tool-Regeln und eigene Anweisungen als JSON-Paket teilen. Secrets werden nie exportiert, nur ihre Platzhalter.
+    - Beim Import gibt es eine Vorschau.
+    - Bei Konflikten wählst du: als Kopie hinzufügen, ersetzen oder überspringen.
+    - Fehlende Secrets trägst du direkt ein.
+    - Pfade, die auf dem neuen Rechner angepasst werden müssen, werden angezeigt.
+    - Reine MCP-Configs aus Claude Code lassen sich ebenso importieren.
   - **Modelle & Kosten:** Kontextfenster und Preise je Modell, aus LiteLLM oder manuell.
   - **Verbrauch:** Tokens und Kosten nach Zeitraum, getrennt nach Chats und Hintergrundaufgaben (Lernen, Titel).
 

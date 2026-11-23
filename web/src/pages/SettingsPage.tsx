@@ -1,6 +1,7 @@
-import { BookText, Check, FileUp, Lock, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { BookText, Check, Download, FileUp, Lock, Pencil, Plus, RefreshCw, Trash2, Upload } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AuthError, request } from "../api";
+import { ExportDialog, ImportDialog } from "../components/BundleDialogs";
 import { fmtCost, fmtTokens } from "../format";
 
 interface RefDoc {
@@ -470,7 +471,32 @@ function UsageCard({ onAuthError }: { onAuthError: () => void }) {
   );
 }
 
+function BundlesCard({ onImported }: { onImported: () => void }) {
+  const [dialog, setDialog] = useState<"export" | "import" | null>(null);
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h3>Export & Import</h3>
+        <span className="grow" />
+        <button className="btn small" onClick={() => setDialog("import")}>
+          <Upload size={14} /> Importieren
+        </button>
+        <button className="btn small primary" onClick={() => setDialog("export")}>
+          <Download size={14} /> Exportieren
+        </button>
+      </div>
+      <p className="muted small">
+        Bündle MCP-Server, Nachschlagewerke und Regeln zu einer Datei – z. B. um ein Setup mit Kolleg:innen zu teilen oder
+        auf einen anderen Rechner zu übertragen. Secrets bleiben immer bei dir.
+      </p>
+      {dialog === "export" && <ExportDialog onClose={() => setDialog(null)} />}
+      {dialog === "import" && <ImportDialog onClose={() => setDialog(null)} onDone={onImported} />}
+    </div>
+  );
+}
+
 export function SettingsPage({ onAuthError }: { onAuthError: () => void }) {
+  const [rev, setRev] = useState(0);
   return (
     <div className="page">
       <header className="page-header">
@@ -485,8 +511,9 @@ export function SettingsPage({ onAuthError }: { onAuthError: () => void }) {
               Beim Chatten wird es an dein LLM geschickt, wie der Rest des Kontexts.
             </span>
           </div>
-          <Instructions onAuthError={onAuthError} />
-          <References onAuthError={onAuthError} />
+          <Instructions key={`i${rev}`} onAuthError={onAuthError} />
+          <References key={`r${rev}`} onAuthError={onAuthError} />
+          <BundlesCard onImported={() => setRev((r) => r + 1)} />
           <ModelsCard onAuthError={onAuthError} />
           <UsageCard onAuthError={onAuthError} />
         </div>

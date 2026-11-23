@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from .. import bundles
 from ..tools.base import ToolContext
 from ..tools.permissions import PERMISSION_MODES
 from .deps import get_services, require_api_key
@@ -424,3 +425,56 @@ async def set_model_info(request: Request, model: str, body: ModelInfoUpdate):
 async def usage(request: Request, days: int = 30):
     """Verbrauch der letzten Tage – Chats und Hintergrundaufgaben (Dreaming, Titel …)."""
     return get_services(request).usage_log.summary(max(1, min(days, 365)))
+
+
+# ------------------------------------------------------------- Export & Import
+
+class ExportRequest(BaseModel):
+    name: str = "Second-Brain-Paket"
+    description: str = ""
+    servers: list[str] = Field(default_factory=list)
+    references: list[int] = Field(default_factory=list)
+    tool_policies: bool = True
+    custom_instructions: bool = False
+
+
+class ImportRequest(BaseModel):
+    bundle: dict[str, Any]
+    decisions: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.get("/bundles/exportable")
+async def bundle_exportable(request: Request):
+    """Was sich exportieren lässt (MCP-Server, Nachschlagewerke, eigene Anweisungen)."""
+    return bundles.exportable(get_services(request))
+
+
+@router.post("/bundles/export")
+async def bundle_export(request: Request, body: ExportRequest):
+    if not body.servers and not body.references and not body.custom_instructions:
+        raise HTTPException(400, "Nichts ausgewählt")
+    try:
+        return bundles.build(get_services(request), **body.model_dump())
+    except (bundles.BundleError, bundles.ConfigError) as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.post("/bundles/preview")
+async def bundle_preview(request: Request, bundle: dict[str, Any]):
+    try:
+        return bundles.preview(get_services(request), bundle)
+    except bundles.BundleError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.post("/bundles/import")
+async def bundle_import(request: Request, body: ImportRequest):
+    s = get_services(request)
+    try:
+        result = bundles.apply(s, body.bundle, body.decisions)
+    except bundles.BundleError as e:
+        raise HTTPException(400, str(e)) from e
+    if result["servers"] or result["secrets"]:
+        await s.mcp.reload()
+        await s.mcp.wait_until_settled(20)
+    return {"result": result, "mcp": s.mcp.status()}

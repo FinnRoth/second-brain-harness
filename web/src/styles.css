@@ -1898,3 +1898,99 @@ button.entity-chip:hover {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 10px;
 }
+
+/* ------------------------------------------------------- Export/Import */
+.bundle-dialog {
+  max-width: 720px;
+  overflow: auto;
+}
+.pick-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.pick-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-faint);
+  background: var(--bg-soft);
+  padding: 7px 12px;
+}
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+}
+.pick-row.column {
+  flex-direction: column;
+  align-items: stretch;
+  cursor: default;
+}
+.pick-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.pick-title + .pick-row {
+  border-top: none;
+}
+.pick-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.small-input {
+  max-width: 280px;
+  padding: 5px 8px;
+  font-size: 13px;
+  margin-left: 25px;
+}
+.pick-row .warn-box {
+  margin-left: 25px;
+}
+.warn-box ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.info-box,
+.ok-box {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 13px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.ok-box {
+  background: color-mix(in srgb, var(--ok) 14%, var(--bg-elev));
+}
+.secrets-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.secrets-box p {
+  margin: 0;
+}
+.secret-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 10px;
+  align-items: center;
+  font-size: 13px;
+}
+.dot.inline {
+  display: inline-block;
+  vertical-align: middle;
+}
