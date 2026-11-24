@@ -455,6 +455,7 @@ class ExportRequest(BaseModel):
     description: str = ""
     servers: list[str] = Field(default_factory=list)
     references: list[int] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
     tool_policies: bool = True
     custom_instructions: bool = False
 
@@ -472,7 +473,7 @@ async def bundle_exportable(request: Request):
 
 @router.post("/bundles/export")
 async def bundle_export(request: Request, body: ExportRequest):
-    if not body.servers and not body.references and not body.custom_instructions:
+    if not body.servers and not body.references and not body.skills and not body.custom_instructions:
         raise HTTPException(400, "Nichts ausgewählt")
     try:
         return bundles.build(get_services(request), **body.model_dump())

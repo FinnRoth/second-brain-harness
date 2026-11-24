@@ -1,4 +1,4 @@
-import { AlertTriangle, BookText, Check, FileUp, KeyRound, Plug } from "lucide-react";
+import { AlertTriangle, BookText, Check, FileUp, KeyRound, Plug, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { request } from "../api";
 
@@ -9,6 +9,12 @@ interface ExportableServer {
   tools: number;
   policies: number;
   path_warnings: string[];
+}
+interface ExportableSkill {
+  name: string;
+  description: string;
+  files: number;
+  scripts: number;
 }
 interface ExportableRef {
   id: number;
@@ -39,7 +45,13 @@ const slug = (s: string) =>
 
 // ------------------------------------------------------------------- Export
 export function ExportDialog({ onClose }: { onClose: () => void }) {
-  const [data, setData] = useState<{ servers: ExportableServer[]; references: ExportableRef[]; custom_instructions: boolean } | null>(null);
+  const [data, setData] = useState<{
+    servers: ExportableServer[];
+    references: ExportableRef[];
+    skills: ExportableSkill[];
+    custom_instructions: boolean;
+  } | null>(null);
+  const [skills, setSkills] = useState<Set<string>>(new Set());
   const [servers, setServers] = useState<Set<string>>(new Set());
   const [refs, setRefs] = useState<Set<number>>(new Set());
   const [policies, setPolicies] = useState(true);
@@ -60,7 +72,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const selected = data?.servers.filter((s) => servers.has(s.name)) ?? [];
   const secrets = Array.from(new Set(selected.flatMap((s) => s.secrets)));
   const paths = selected.filter((s) => s.path_warnings.length);
-  const empty = !servers.size && !refs.size && !instructions;
+  const empty = !servers.size && !refs.size && !skills.size && !instructions;
 
   const run = async () => {
     setError(null);
@@ -70,6 +82,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         description,
         servers: Array.from(servers),
         references: Array.from(refs),
+        skills: Array.from(skills),
         tool_policies: policies,
         custom_instructions: instructions,
       });
@@ -85,7 +98,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       <div className="modal wide bundle-dialog" onClick={(e) => e.stopPropagation()}>
         <h2>Paket exportieren</h2>
         <p className="muted small">
-          Wähle aus, was zusammengehört – z. B. einen MCP-Server und das Nachschlagewerk, das seine Links beschreibt. Secrets
+          Wähle aus, was zusammengehört – z. B. einen MCP-Server, das Nachschlagewerk, das seine Links beschreibt, und Skills, die darauf aufbauen. Secrets
           werden nie exportiert, nur ihre Platzhalter.
         </p>
         <div className="form-grid">
@@ -126,6 +139,20 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             </label>
           ))}
           {data && !data.references.length && <div className="muted small pad">Keine Nachschlagewerke.</div>}
+
+          <div className="pick-title">Skills</div>
+          {data?.skills.map((sk) => (
+            <label key={sk.name} className="pick-row">
+              <input type="checkbox" checked={skills.has(sk.name)} onChange={() => toggle(skills, sk.name, setSkills)} />
+              <Sparkles size={15} className="muted" />
+              <span className="pick-text">
+                <b>{sk.name}</b>
+                <span className="muted small ellipsis">{sk.description}</span>
+              </span>
+              {sk.files > 0 && <span className="badge">{sk.files} {sk.files === 1 ? "Datei" : "Dateien"}</span>}
+            </label>
+          ))}
+          {data && !data.skills.length && <div className="muted small pad">Keine Skills.</div>}
 
           <div className="pick-title">Weiteres</div>
           <label className="pick-row">
@@ -186,6 +213,7 @@ interface Preview {
     policies: number;
   }[];
   references: { index: number; title: string; description: string; chars: number; mode: string; exists: boolean; suggested_title: string }[];
+  skills: { index: number; name: string; description: string; files: number; scripts: number; exists: boolean; suggested_name: string }[];
   custom_instructions: { present: boolean; chars: number; local_exists: boolean };
   missing_secrets: string[];
 }
@@ -198,6 +226,7 @@ export function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone:
   const [preview, setPreview] = useState<Preview | null>(null);
   const [serverActs, setServerActs] = useState<Record<string, { action: Action; new_name: string }>>({});
   const [refActs, setRefActs] = useState<Record<number, { action: Action; new_title: string }>>({});
+  const [skillActs, setSkillActs] = useState<Record<number, { action: Action; new_name: string }>>({});
   const [secrets, setSecrets] = useState<Record<string, string>>({});
   const [instr, setInstr] = useState<"append" | "replace" | "skip">("skip");
   const [policies, setPolicies] = useState(true);
@@ -225,6 +254,9 @@ export function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone:
       setRefActs(
         Object.fromEntries(pv.references.map((r) => [r.index, { action: r.exists ? "rename" : "add", new_title: r.suggested_title }])),
       );
+      setSkillActs(
+        Object.fromEntries((pv.skills ?? []).map((sk) => [sk.index, { action: sk.exists ? "rename" : "add", new_name: sk.suggested_name }])),
+      );
       setInstr(pv.custom_instructions.present ? (pv.custom_instructions.local_exists ? "append" : "replace") : "skip");
     } catch (e: any) {
       setError(e.message);
@@ -240,6 +272,7 @@ export function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone:
         decisions: {
           servers: serverActs,
           references: refActs,
+          skills: skillActs,
           secrets,
           custom_instructions: instr,
           tool_policies: policies,
@@ -276,6 +309,7 @@ export function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone:
           <>
             <div className="ok-box">
               <Check size={16} /> Importiert: {done.result.servers.length} Server, {done.result.references.length} Nachschlagewerke
+              {done.result.skills?.length > 0 && `, ${done.result.skills.length} Skills`}
               {done.result.secrets.length > 0 && `, ${done.result.secrets.length} Secrets`}
             </div>
             {done.mcp.servers
@@ -385,6 +419,30 @@ export function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone:
                         className="input small-input"
                         value={act.new_title}
                         onChange={(e) => setRefActs({ ...refActs, [r.index]: { ...act, new_title: e.target.value } })}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+              {preview.skills?.length > 0 && <div className="pick-title">Skills</div>}
+              {preview.skills?.map((sk) => {
+                const act = skillActs[sk.index];
+                return (
+                  <div key={sk.index} className="pick-row column">
+                    <div className="pick-line">
+                      <Sparkles size={15} className="muted" />
+                      <span className="pick-text">
+                        <b>{sk.name}</b> {sk.exists && <span className="badge">existiert bereits</span>}
+                        <span className="muted small ellipsis">{sk.description}</span>
+                      </span>
+                      {sk.scripts > 0 && <span className="badge">{sk.scripts} {sk.scripts === 1 ? "Skript" : "Skripte"}</span>}
+                      {conflictSelect(sk.exists, act.action, (a) => setSkillActs({ ...skillActs, [sk.index]: { ...act, action: a } }))}
+                    </div>
+                    {act.action === "rename" && sk.exists && (
+                      <input
+                        className="input small-input"
+                        value={act.new_name}
+                        onChange={(e) => setSkillActs({ ...skillActs, [sk.index]: { ...act, new_name: e.target.value } })}
                       />
                     )}
                   </div>

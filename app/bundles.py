@@ -1,7 +1,8 @@
 """Pakete: ausgewählte Konfiguration exportieren und anderswo importieren.
 
 Ein Paket ist eine JSON-Datei mit MCP-Servern (wie in mcp.json, Secrets nur als ${NAME}),
-Nachschlagewerken, optional Tool-Regeln und eigenen Anweisungen. Secret-Werte werden
+Nachschlagewerken, Skills (alle Dateien, binäre als base64), optional Tool-Regeln und
+eigenen Anweisungen. Secret-Werte werden
 nie exportiert; beim Import zeigt die Vorschau, welche fehlen.
 """
 
@@ -14,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from .mcp import editor
 from .mcp.config import ConfigError, load_dotenv
+from .skills import SkillError, SkillStore, parse_skill_md, slugify
 from .tools.mcp import exposed_name
 
 if TYPE_CHECKING:
@@ -84,9 +86,15 @@ def exportable(s: "Services") -> dict[str, Any]:
         {"id": d["id"], "title": d["title"], "description": d["description"], "chars": d["chars"], "mode": d["mode"]}
         for d in s.store.list_reference_docs()
     ]
+    skills = [
+        {"name": sk["name"], "description": sk["description"], "files": sk["files"], "scripts": sk["scripts"]}
+        for sk in s.skills.list()
+        if not sk["error"]
+    ]
     return {
         "servers": out_servers,
         "references": refs,
+        "skills": skills,
         "custom_instructions": bool(s.store.get_custom_instructions()),
     }
 
@@ -98,6 +106,7 @@ def build(
     description: str = "",
     servers: list[str] | None = None,
     references: list[int] | None = None,
+    skills: list[str] | None = None,
     tool_policies: bool = True,
     custom_instructions: bool = False,
 ) -> dict[str, Any]:
@@ -130,6 +139,11 @@ def build(
         bundle["references"].append(
             {k: doc[k] for k in ("title", "description", "content", "mode", "enabled")}
         )
+    if skills:
+        try:
+            bundle["skills"] = [s.skills.to_bundle(n) for n in skills]
+        except SkillError as e:
+            raise BundleError(str(e)) from e
     if exported_policies:
         bundle["toolPolicies"] = exported_policies
     if custom_instructions:
@@ -148,9 +162,10 @@ def normalize(data: Any) -> dict[str, Any]:
         raise BundleError("Das Paket stammt aus einer neueren Version – bitte Second Brain aktualisieren")
     servers = data.get("mcpServers") or {}
     refs = data.get("references") or []
-    if not isinstance(servers, dict) or not isinstance(refs, list):
+    skills = data.get("skills") or []
+    if not isinstance(servers, dict) or not isinstance(refs, list) or not isinstance(skills, list):
         raise BundleError("Ungültiger Aufbau des Pakets")
-    if not servers and not refs and not data.get("customInstructions"):
+    if not servers and not refs and not skills and not data.get("customInstructions"):
         raise BundleError("Das Paket ist leer")
     for name, raw in servers.items():
         if not isinstance(raw, dict):
@@ -162,11 +177,19 @@ def normalize(data: Any) -> dict[str, Any]:
     for i, r in enumerate(refs):
         if not isinstance(r, dict) or not str(r.get("title") or "").strip():
             raise BundleError(f"Nachschlagewerk {i + 1}: Titel fehlt")
+    for i, sk in enumerate(skills):
+        if not isinstance(sk, dict):
+            raise BundleError(f"Skill {i + 1}: Eintrag muss ein Objekt sein")
+        try:
+            SkillStore.bundle_files(sk)
+        except (SkillError, ValueError) as e:
+            raise BundleError(f"Skill {i + 1}: {e}") from e
     return {
         "name": data.get("name") or "Import",
         "description": data.get("description") or "",
         "mcpServers": servers,
         "references": refs,
+        "skills": skills,
         "toolPolicies": data.get("toolPolicies") or {},
         "customInstructions": data.get("customInstructions") or "",
     }
@@ -216,12 +239,30 @@ def preview(s: "Services", data: Any) -> dict[str, Any]:
                 "suggested_title": f"{title} (2)" if title.lower() in titles else title,
             }
         )
+    skills = []
+    for i, sk in enumerate(b["skills"]):
+        files = sk.get("files") or {}
+        meta, _ = parse_skill_md(str(files.get("SKILL.md") or ""))
+        name = slugify(str(meta.get("name") or sk.get("name") or "skill"))
+        exists = s.skills.path(name) is not None
+        skills.append(
+            {
+                "index": i,
+                "name": name,
+                "description": str(meta.get("description") or ""),
+                "files": len(files) - 1,
+                "scripts": sum(1 for p in files if p.startswith("scripts/")),
+                "exists": exists,
+                "suggested_name": s.skills.unique_name(name) if exists else name,
+            }
+        )
     missing = sorted({m for srv in servers for m in srv["missing_secrets"]})
     return {
         "name": b["name"],
         "description": b["description"],
         "servers": servers,
         "references": refs,
+        "skills": skills,
         "custom_instructions": {
             "present": bool(b["customInstructions"]),
             "chars": len(b["customInstructions"]),
@@ -235,7 +276,7 @@ def apply(s: "Services", data: Any, decisions: dict[str, Any]) -> dict[str, Any]
     """decisions = {servers: {name: {action, new_name}}, references: {index: {action, new_title}},
     custom_instructions: append|replace|skip, tool_policies: bool, secrets: {NAME: value}}"""
     b = normalize(data)
-    result: dict[str, list[str]] = {"servers": [], "references": [], "skipped": [], "secrets": []}
+    result: dict[str, list[str]] = {"servers": [], "references": [], "skills": [], "skipped": [], "secrets": []}
     config_path = s.settings.mcp_config
 
     # Secrets zuerst, damit Server direkt mit ihnen starten
@@ -299,6 +340,29 @@ def apply(s: "Services", data: Any, decisions: dict[str, Any]) -> dict[str, Any]
             s.store.create_reference_doc(title, description, content, mode, bool(r.get("enabled", True)))
             titles[title.lower()] = -1
         result["references"].append(title)
+
+    skill_decisions = {str(k): v for k, v in (decisions.get("skills") or {}).items()}
+    for i, sk in enumerate(b["skills"]):
+        d = skill_decisions.get(str(i)) or {}
+        files = SkillStore.bundle_files(sk)
+        meta, _ = parse_skill_md(files["SKILL.md"].decode("utf-8", errors="replace"))
+        name = slugify(str(meta.get("name") or sk.get("name") or "skill"))
+        action = d.get("action") or "add"
+        if action == "skip":
+            result["skipped"].append(f"Skill {name}")
+            continue
+        target = name
+        if action == "rename" or (action == "add" and s.skills.path(name)):
+            target = slugify((d.get("new_name") or "").strip() or s.skills.unique_name(name))
+            if s.skills.path(target):
+                raise BundleError(f"Es gibt schon einen Skill „{target}“")
+        try:
+            res = s.skills.install(files, name=target, on_conflict="overwrite" if action == "overwrite" else "rename")
+        except SkillError as e:
+            raise BundleError(f"Skill „{name}“: {e}") from e
+        if sk.get("enabled") is False:
+            s.skills.set_enabled(res["name"], False)
+        result["skills"].append(res["name"])
 
     instr = b["customInstructions"]
     choice = decisions.get("custom_instructions") or "skip"

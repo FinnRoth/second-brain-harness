@@ -87,6 +87,8 @@ class Settings(BaseSettings):
 
     # Dokumente
     files_dir: str = "./data/files"
+    skills_dir: str = "./data/skills"
+    workspace_dir: str = "./data/workspace"
     max_upload_mb: int = 50
     doc_inline_tokens: int = 15000  # bis zu dieser Größe kommt ein Dokument komplett in den Kontext
     doc_vision: bool = True  # Seiten mit Grafiken/Scans zusätzlich als Bild mitschicken (Modell muss Bilder können)

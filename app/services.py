@@ -25,6 +25,8 @@ from .tools.memory import MemoryToolProvider
 from .tools.documents import DocumentToolProvider
 from .tools.references import ReferenceToolProvider
 from .documents import DocumentStore
+from .skills import SkillStore
+from .tools.skills import SkillToolProvider
 from .tools.registry import ToolRegistry
 from .agent.runs import RunManager
 from .usage import ModelCatalog, TrackedLLM, UsageLog
@@ -38,6 +40,7 @@ class Services:
         self.db = Database(settings.db_path)
         self.store = MemoryStore(self.db)
         self.documents = DocumentStore(self.db, settings.files_dir)
+        self.skills = SkillStore(settings.skills_dir, self.store)
         raw_llm: LLM = llm or LiteLLMClient(settings)
         self.catalog = ModelCatalog(raw_llm, self.db)
         self.usage_log = UsageLog(self.db)
@@ -48,7 +51,7 @@ class Services:
         self.indexer = Indexer(self.store, self.embedder)
         self.profile = ProfileBuilder(self.store, self.llm, settings)
         self.consolidator = EntityConsolidator(self.store, self.llm, settings)
-        self.prompt_builder = PromptBuilder(self.store, self.retriever, settings)
+        self.prompt_builder = PromptBuilder(self.store, self.retriever, settings, skills=self.skills)
         self.summarizer = ConversationSummarizer(self.store, self.llm, self.embedder, settings)
         self.exporter = VaultExporter(self.store, settings.export_dir)
         self.worker = Worker(self)
@@ -64,6 +67,7 @@ class Services:
                 MemoryToolProvider(self.store, self.retriever),
                 ReferenceToolProvider(self.store),
                 DocumentToolProvider(self.documents),
+                SkillToolProvider(self.skills, self.documents, settings.workspace_dir),
                 MCPToolProvider(self.mcp, settings.mcp_max_output_chars),
             ],
             search_threshold=settings.tool_search_threshold,

@@ -1,18 +1,4 @@
-import {
-  Brain,
-  Ghost,
-  Loader2,
-  MoreHorizontal,
-  PanelLeftClose,
-  Pencil,
-  Pin,
-  PinOff,
-  Plug,
-  Search,
-  Settings,
-  SquarePen,
-  Trash2,
-} from "lucide-react";
+import { Brain, Ghost, Loader2, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plug, Search, Settings, Sparkles, SquarePen, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { api } from "../api";
 import type { ChatSummary } from "../types";
@@ -190,6 +176,9 @@ export function Sidebar({
         </button>
         <button className={`nav-item${route === "#/tools" ? " active" : ""}`} onClick={() => onNavigate("#/tools")}>
           <Plug size={17} /> Tools & MCP
+        </button>
+        <button className={`nav-item${route === "#/skills" ? " active" : ""}`} onClick={() => onNavigate("#/skills")}>
+          <Sparkles size={17} /> Skills
         </button>
         <button
           className={`nav-item${route === "#/settings" ? " active" : ""}`}

@@ -83,6 +83,7 @@ launchctl kickstart -k gui/$(id -u)/com.secondbrain.harness
   - Zusammenfassung ansehen und bearbeiten
   - gespeicherte Erinnerungen verwalten
   - Personen, Projekte, Ideen usw. mit allen Fakten und deren Historie durchstöbern
+- **Skills:** Anleitungen für wiederkehrende Aufgaben anlegen, importieren (.zip/.skill/SKILL.md) und exportieren. Details unter [Skills](#skills).
 - **Tools & MCP:**
   - MCP-Server hinzufügen, bearbeiten, ein- und ausschalten und entfernen, mit Vorlagen für npx, uvx aus Git, lokale Ordner und Remote.
   - Konfiguration aus Claude Code per **„JSON einfügen“** übernehmen.
@@ -263,6 +264,31 @@ Optional:
 - `MAX_UPLOAD_MB` (Standard 50).
 
 Dateien eines Chats werden mit dem Chat gelöscht.
+
+## Skills
+
+Skills folgen dem offenen [Agent-Skills-Format](https://agentskills.io) – dasselbe wie bei Claude Code, Claude.ai oder Codex. Ein Skill ist ein Ordner mit einer `SKILL.md`:
+
+```markdown
+---
+name: status-mail
+description: Schreibt wöchentliche Status-Mails ans Management. Nutzen, wenn ein Wochenupdate gebraucht wird.
+---
+
+# Status-Mail
+1. Lies references/beispiel.md für Ton und Aufbau.
+2. Gliederung: Erreicht, Nächste Schritte, Risiken.
+```
+
+Daneben können weitere Dateien liegen (`references/`, `assets/`, `scripts/` …).
+
+- **So nutzt der Assistent sie:** Im Systemprompt stehen nur Name und Beschreibung (wenige Tokens pro Skill). Passt eine Anfrage, lädt er die Anleitung mit `use_skill` und liest Zusatzdateien mit `read_skill_file`. Die Beschreibung entscheidet also, ob ein Skill zum Einsatz kommt.
+- **Verwalten** auf der Seite *Skills*: anlegen, bearbeiten, ein-/ausschalten, löschen.
+- **Import:** `.zip`/`.skill` mit einem oder mehreren Skill-Ordnern oder eine einzelne `SKILL.md`. Skills aus Claude Code (`~/.claude/skills/<name>`) einfach als Ordner zippen. Bei gleichem Namen: als Kopie, ersetzen oder überspringen.
+- **Export:** einzeln oder alle als `.zip` – oder zusammen mit MCP-Servern und Nachschlagewerken im [Paket](#die-app) (Einstellungen → Export).
+- **Skripte** (`scripts/…`, `.py`, `.sh`, `.js`) darf der Assistent nur ausführen, wenn du das auf der Skills-Seite einschaltest. Sie laufen mit deinen Rechten in einem eigenen Arbeitsordner pro Chat (`data/workspace/<chat>`), in dem auch die hochgeladenen Dateien des Chats liegen. Im Modus *Fragen* bestätigst du jeden Aufruf, im Modus *Planen* läuft nichts. Python-Skripte nutzen die Python-Umgebung des Harness (u. a. openpyxl, python-pptx, PyMuPDF sind dabei).
+
+Skills liegen in `data/skills/` (`SKILLS_DIR`).
 
 ## Embeddings (optional)
 

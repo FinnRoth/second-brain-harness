@@ -159,6 +159,8 @@ def settings(tmp_path) -> Settings:
         mcp_watch_interval=0,
         web_dir=str(tmp_path / "web"),
         files_dir=str(tmp_path / "files"),
+        skills_dir=str(tmp_path / "skills"),
+        workspace_dir=str(tmp_path / "workspace"),
     )
 
 

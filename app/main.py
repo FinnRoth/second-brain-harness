@@ -11,12 +11,12 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from .api import mcp_admin, memory_admin, native, openai_compat
+from .api import mcp_admin, memory_admin, native, openai_compat, skills
 from .config import Settings, get_settings
 from .llm import LLM
 from .services import Services
 
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -42,6 +42,7 @@ def create_app(settings: Settings | None = None, llm: LLM | None = None, service
     app.include_router(memory_admin.router)
     app.include_router(mcp_admin.router)
     app.include_router(native.router)
+    app.include_router(skills.router)
 
     @app.get("/health")
     async def health():

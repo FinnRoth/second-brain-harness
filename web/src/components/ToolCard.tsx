@@ -26,6 +26,10 @@ export const MEMORY_LABELS: Record<string, string> = {
   update_entity: "Eintrag aktualisiert",
   tool_search: "Tools gesucht",
   read_reference: "Nachgeschlagen",
+  read_document: "Dokument gelesen",
+  use_skill: "Skill geladen",
+  read_skill_file: "Skill-Datei gelesen",
+  run_skill_script: "Skript ausgeführt",
 };
 
 const RUNNING_LABELS: Record<string, string> = {
@@ -38,11 +42,15 @@ const RUNNING_LABELS: Record<string, string> = {
   update_entity: "Aktualisiert Eintrag",
   tool_search: "Sucht Tools",
   read_reference: "Schlägt nach",
+  read_document: "Liest Dokument",
+  use_skill: "Lädt Skill",
+  read_skill_file: "Liest Skill-Datei",
+  run_skill_script: "Führt Skript aus",
 };
 
 export function argSummary(part: ToolPart, max = 70): string {
   const a = part.args as Record<string, any>;
-  const v = a.query ?? a.name ?? a.content ?? a.text ?? a.path ?? a.url ?? a.fact_id;
+  const v = a.script ?? a.query ?? a.name ?? a.content ?? a.text ?? a.path ?? a.url ?? a.fact_id;
   if (typeof v === "string" || typeof v === "number") {
     const s = String(v);
     return s.length > max ? s.slice(0, max - 1) + "…" : s;

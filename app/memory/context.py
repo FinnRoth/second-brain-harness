@@ -60,8 +60,9 @@ class TurnContext:
 
 
 class PromptBuilder:
-    def __init__(self, store: MemoryStore, retriever: Retriever, settings: Settings) -> None:
+    def __init__(self, store: MemoryStore, retriever: Retriever, settings: Settings, skills: Any = None) -> None:
         self.store = store
+        self.skills = skills
         self.retriever = retriever
         self.settings = settings
 
@@ -122,6 +123,7 @@ class PromptBuilder:
             tools_section=f"\n## Verbundene Tools (MCP)\n{tools_section}\n" if tools_section else "",
             custom_instructions=self.custom_instructions_block(),
             references=self.references_block(),
+            skills=self.skills.prompt_block() if self.skills else "",
         )
         return text, saved_ids
 

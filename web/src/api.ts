@@ -66,6 +66,34 @@ export async function uploadFile(file: File, chatId?: string | null): Promise<Fi
   return res.json();
 }
 
+/** Schickt ein Formular (Datei-Upload) und liefert die JSON-Antwort. */
+export async function postForm<T = any>(path: string, form: FormData): Promise<T> {
+  const res = await fetch(path, { method: "POST", headers: headers(false), body: form });
+  if (res.status === 401) throw new AuthError("API-Key fehlt oder ist falsch");
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = (await res.json()).detail ?? detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+/** Lädt eine geschützte Datei herunter und speichert sie unter `filename`. */
+export async function downloadFile(path: string, filename: string) {
+  const url = await blobUrl(path);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
 /** Lädt eine geschützte Datei (mit API-Key) und liefert eine Blob-URL. */
 export async function blobUrl(path: string): Promise<string> {
   const res = await fetch(path, { headers: headers(false) });
