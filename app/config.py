@@ -85,6 +85,14 @@ class Settings(BaseSettings):
     extraction_max_chars: int = 16000
     json_mode: bool = True  # response_format=json_object für Hintergrundaufgaben
 
+    # Dokumente
+    files_dir: str = "./data/files"
+    max_upload_mb: int = 50
+    doc_inline_tokens: int = 15000  # bis zu dieser Größe kommt ein Dokument komplett in den Kontext
+    doc_vision: bool = True  # Seiten mit Grafiken/Scans zusätzlich als Bild mitschicken (Modell muss Bilder können)
+    doc_max_page_images: int = 6  # max. Seitenbilder pro Dokument
+    pdf_native: bool = False  # PDFs direkt als Datei ans Modell (nur wenn Anbieter/LiteLLM das unterstützen)
+
     # Gebaute Web-App (web/dist), wird unter / ausgeliefert
     web_dir: str = "./web/dist"
 

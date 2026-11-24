@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+import asyncio
+import re
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import bundles
@@ -23,9 +26,10 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 class Attachment(BaseModel):
     name: str
-    kind: Literal["text", "image"]
+    kind: Literal["text", "image", "file"]
     text: str | None = None  # für kind=text
     url: str | None = None  # data:-URL für kind=image
+    file_id: str | None = None  # für kind=file (vorher über /api/files hochgeladen)
 
 
 class ChatCreate(BaseModel):
@@ -194,15 +198,31 @@ async def delete_chat(request: Request, chat_id: str):
         runs.cancel(run.id)
     if not runs.repo.delete(chat_id):
         raise HTTPException(404, "Chat nicht gefunden")
+    get_services(request).documents.delete_for_chat(chat_id)
     return {"deleted": chat_id}
 
 
-def _user_parts(body: SendMessage) -> list[dict[str, Any]]:
+def _user_parts(body: SendMessage, docs: Any) -> list[dict[str, Any]]:
     parts: list[dict[str, Any]] = []
     if body.content:
         parts.append({"type": "text", "text": body.content})
     for a in body.attachments:
-        if a.kind == "text":
+        if a.kind == "file":
+            f = docs.get(a.file_id or "") if a.file_id and re.fullmatch(r"[a-f0-9]{32}", a.file_id) else None
+            if not f:
+                raise HTTPException(400, f"Datei {a.name} nicht gefunden – bitte erneut hochladen")
+            parts.append(
+                {
+                    "type": "file",
+                    "file_id": f["id"],
+                    "name": f["name"],
+                    "kind": f["kind"],
+                    "pages": f.get("pages"),
+                    "chars": f.get("chars"),
+                    "status": f["status"],
+                }
+            )
+        elif a.kind == "text":
             text = (a.text or "")[:MAX_TEXT_ATTACHMENT]
             parts.append({"type": "file", "name": a.name, "text": text, "chars": len(a.text or "")})
         else:
@@ -241,7 +261,8 @@ async def send_message(request: Request, chat_id: str, body: SendMessage):
     _check_mode(body.permission_mode)
     model = _model(request, chat, body.model)
     params = _params(body.reasoning_effort)
-    parts = _user_parts(body)
+    parts = _user_parts(body, get_services(request).documents)
+    get_services(request).documents.attach_to_chat([p["file_id"] for p in parts if p.get("file_id")], chat_id)
     if body.edit_message_id is not None:
         runs.repo.delete_from(chat_id, body.edit_message_id)
     runs.repo.update(chat_id, model=model, permission_mode=body.permission_mode)
@@ -478,3 +499,60 @@ async def bundle_import(request: Request, body: ImportRequest):
         await s.mcp.reload()
         await s.mcp.wait_until_settled(20)
     return {"result": result, "mcp": s.mcp.status()}
+
+
+# ------------------------------------------------------------------- Dateien
+def _file_or_404(request: Request, file_id: str) -> dict[str, Any]:
+    if not re.fullmatch(r"[a-f0-9]{32}", file_id):
+        raise HTTPException(404, "Datei nicht gefunden")
+    f = get_services(request).documents.get(file_id)
+    if not f:
+        raise HTTPException(404, "Datei nicht gefunden")
+    return f
+
+
+@router.post("/files", status_code=201)
+async def upload_file(request: Request, file: UploadFile = File(...), chat_id: str | None = Form(default=None)):
+    """Datei hochladen und lesen (PDF, Word, PowerPoint, Excel, Bilder, Text …)."""
+    s = get_services(request)
+    data = await file.read()
+    if len(data) > s.settings.max_upload_mb * 1024 * 1024:
+        raise HTTPException(413, f"Datei ist größer als {s.settings.max_upload_mb} MB")
+    if not data:
+        raise HTTPException(400, "Leere Datei")
+    return await asyncio.to_thread(s.documents.save_upload, file.filename or "datei", data, file.content_type, chat_id)
+
+
+@router.get("/files/{file_id}")
+async def file_info(request: Request, file_id: str):
+    return _file_or_404(request, file_id)
+
+
+@router.get("/files/{file_id}/content")
+async def file_content(request: Request, file_id: str):
+    """Was der Assistent aus der Datei gelesen hat (Markdown)."""
+    f = _file_or_404(request, file_id)
+    docs = get_services(request).documents
+    return {**f, "content": docs.content(file_id), "sections": [s["label"] for s in docs.sections(file_id)]}
+
+
+@router.get("/files/{file_id}/original")
+async def file_original(request: Request, file_id: str):
+    f = _file_or_404(request, file_id)
+    path = get_services(request).documents.original_path(file_id)
+    if not path:
+        raise HTTPException(404, "Original nicht gefunden")
+    return Response(
+        path.read_bytes(),
+        media_type=f["mime"] or "application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="{f["name"]}"'},
+    )
+
+
+@router.get("/files/{file_id}/pages/{page}")
+async def file_page(request: Request, file_id: str, page: int):
+    _file_or_404(request, file_id)
+    png = await asyncio.to_thread(get_services(request).documents.page_png, file_id, page)
+    if not png:
+        raise HTTPException(404, "Keine Seitenansicht verfügbar")
+    return Response(png, media_type="image/png")

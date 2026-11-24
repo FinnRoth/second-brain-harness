@@ -22,7 +22,9 @@ from .memory.store import MemoryStore
 from .responses_api import ResponsesBackend
 from .tools.mcp import MCPToolProvider
 from .tools.memory import MemoryToolProvider
+from .tools.documents import DocumentToolProvider
 from .tools.references import ReferenceToolProvider
+from .documents import DocumentStore
 from .tools.registry import ToolRegistry
 from .agent.runs import RunManager
 from .usage import ModelCatalog, TrackedLLM, UsageLog
@@ -35,6 +37,7 @@ class Services:
         self.settings = settings
         self.db = Database(settings.db_path)
         self.store = MemoryStore(self.db)
+        self.documents = DocumentStore(self.db, settings.files_dir)
         raw_llm: LLM = llm or LiteLLMClient(settings)
         self.catalog = ModelCatalog(raw_llm, self.db)
         self.usage_log = UsageLog(self.db)
@@ -60,6 +63,7 @@ class Services:
             [
                 MemoryToolProvider(self.store, self.retriever),
                 ReferenceToolProvider(self.store),
+                DocumentToolProvider(self.documents),
                 MCPToolProvider(self.mcp, settings.mcp_max_output_chars),
             ],
             search_threshold=settings.tool_search_threshold,

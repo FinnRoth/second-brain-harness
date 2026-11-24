@@ -77,7 +77,7 @@ launchctl kickstart -k gui/$(id -u)/com.secondbrain.harness
 - **Inkognito** (oben rechts bei einem neuen Chat): Der Assistent kennt dich, aber nichts aus dem Chat wird gespeichert.
 - **Bearbeiten und Neu generieren:** Eine frühere Nachricht kannst du ändern und von dort aus neu fragen.
 - **Stopp:** Der bisher erzeugte Teil der Antwort bleibt erhalten.
-- **Anhänge:** Bilder und Textdateien (Markdown, Code, CSV, JSON …) per Klick, Drag & Drop oder Einfügen. PDF/Word folgen.
+- **Dokumente & Bilder:** PDF, Word, PowerPoint, Excel, Markdown, Text, CSV, Code und Bilder per Klick, Drag & Drop oder Einfügen. Ein Klick auf die Datei im Chat zeigt, was der Assistent daraus gelesen hat. Details unter [Dokumente](#dokumente-und-bilder).
 - **Läuft im Hintergrund weiter:** Fenster zu oder neu geladen? Die Antwort läuft weiter und erscheint wieder, sobald du zurück bist.
 - **Gedächtnis-Seite:**
   - Zusammenfassung ansehen und bearbeiten
@@ -239,6 +239,30 @@ MCP-Server kommen in `config/mcp.json` und stehen dort im **selben Format wie in
 Manche Modelle (z. B. neuere GPT-Modelle über Azure) lehnen Tools zusammen mit `reasoning_effort` auf `/v1/chat/completions` ab. Der Harness wechselt dann **automatisch** auf `/v1/responses`. Dort gehen Tools und Reasoning gleichzeitig, und eine Zusammenfassung des Reasonings erscheint in der App als Denkprozess. Es wird nichts beim Anbieter gespeichert (`store: false`).
 
 Einstellungen dafür: `UPSTREAM_API=responses` (immer), `RESPONSES_MODELS=…` (nur bestimmte Modelle) und `REASONING_TOOLS_CONFLICT` (Verhalten im Konfliktfall).
+
+## Dokumente und Bilder
+
+Hochgeladene Dateien werden beim Upload einmal aufbereitet und unter `data/files/` gespeichert (nur lokal):
+
+| Format | So liest der Assistent es |
+|---|---|
+| PDF | Text als Markdown mit Überschriften, Listen und Tabellen, Seite für Seite. Seiten mit Grafiken, Diagrammen oder Scans bekommt er **zusätzlich als Bild**. |
+| Word (.docx) | Markdown mit Überschriften, Tabellen und Listen |
+| PowerPoint (.pptx) | Folie für Folie inkl. Sprechernotizen. Mit LibreOffice zusätzlich die Folien als Bild, damit Diagramme und Layouts ankommen. |
+| Excel (.xlsx/.xls) | Jedes Tabellenblatt als Tabelle |
+| Bilder | direkt an das Modell (Vision) |
+| Text, Markdown, CSV, JSON, Code, HTML | als Text |
+
+**Kleine Dokumente** (bis `DOC_INLINE_TOKENS`, Standard 15 000 Tokens) stehen komplett im Chat. **Große Dokumente** bekommt der Assistent als Gliederung mit Anfang und liest gezielt nach: mit dem Tool `read_document` nach Seiten/Folien/Blättern oder per Suchbegriff. So bleiben auch 300-Seiten-PDFs bezahlbar und das Kontextfenster frei.
+
+Optional:
+
+- **LibreOffice** (`brew install --cask libreoffice`) wird automatisch erkannt. Damit gehen auch alte Formate (.doc, .ppt, .rtf, .odt …) und Folien/Seiten als Bild.
+- `PDF_NATIVE=true` schickt PDFs zusätzlich im Original an das Modell, falls dein Modell/Anbieter PDF-Eingaben direkt versteht.
+- `DOC_VISION=false` schaltet die Seitenbilder ab (z. B. für Modelle ohne Bildverständnis). `DOC_MAX_PAGE_IMAGES` begrenzt ihre Zahl pro Datei (Standard 6).
+- `MAX_UPLOAD_MB` (Standard 50).
+
+Dateien eines Chats werden mit dem Chat gelöscht.
 
 ## Embeddings (optional)
 

@@ -1,29 +1,26 @@
-import { ArrowUp, FileText, Image as ImageIcon, Lightbulb, Paperclip, Square, X } from "lucide-react";
+import { ArrowUp, FileText, Image as ImageIcon, Lightbulb, Loader2, Paperclip, Square, X } from "lucide-react";
+import { uploadFile } from "../api";
 import { useEffect, useRef, useState } from "react";
 import type { AppConfig, Attachment, ChatUsage, PermissionMode } from "../types";
 import { ContextMeter } from "./ContextMeter";
 import { Dropdown, ModePicker } from "./Pickers";
 
-const TEXT_EXT =
-  /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|toml|ini|xml|html?|css|scss|js|jsx|ts|tsx|py|rb|go|rs|java|kt|swift|c|h|cpp|hpp|cs|php|sh|zsh|bash|sql|log|env|conf|tex|rst|org)$/i;
-const MAX_TEXT = 300_000;
+const KIND_LABEL: Record<string, string> = {
+  pdf: "PDF",
+  docx: "Word",
+  pptx: "PowerPoint",
+  xlsx: "Excel",
+  image: "Bild",
+  text: "Text",
+  html: "HTML",
+};
 
-async function readFile(file: File): Promise<Attachment> {
-  if (file.type.startsWith("image/")) {
-    if (file.size > 10 * 1024 * 1024) throw new Error(`${file.name}: Bild ist größer als 10 MB`);
-    const url = await new Promise<string>((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result as string);
-      r.onerror = () => reject(r.error);
-      r.readAsDataURL(file);
-    });
-    return { name: file.name || "Bild.png", kind: "image", url };
-  }
-  if (file.type.startsWith("text/") || TEXT_EXT.test(file.name) || file.type === "application/json") {
-    const text = await file.text();
-    return { name: file.name, kind: "text", text: text.slice(0, MAX_TEXT) };
-  }
-  throw new Error(`${file.name}: Dieser Dateityp wird noch nicht unterstützt (Text-Dateien und Bilder gehen).`);
+function chipInfo(a: Attachment): string {
+  if (a.uploading) return "liest …";
+  if (a.status === "error") return a.error || "nicht lesbar";
+  const kind = KIND_LABEL[a.fileKind ?? ""] ?? a.fileKind ?? "";
+  const unit = a.fileKind === "pptx" ? "Folien" : a.fileKind === "xlsx" ? "Blätter" : "S.";
+  return [kind, a.pages ? `${a.pages} ${unit}` : ""].filter(Boolean).join(" · ");
 }
 
 export interface ComposerSettings {
@@ -74,19 +71,32 @@ export function Composer({
   const addFiles = async (files: FileList | File[]) => {
     setError(null);
     for (const f of Array.from(files)) {
-      try {
-        const a = await readFile(f);
-        setAttachments((prev) => [...prev, a]);
-      } catch (e: any) {
-        setError(e.message);
-      }
+      const localId = Math.random().toString(36).slice(2);
+      const name = f.name || (f.type.startsWith("image/") ? "Bild.png" : "datei");
+      setAttachments((prev) => [...prev, { name, kind: "file", localId, uploading: true }]);
+      uploadFile(f)
+        .then((info) =>
+          setAttachments((prev) =>
+            prev.map((a) =>
+              a.localId === localId
+                ? { ...a, uploading: false, file_id: info.id, fileKind: info.kind, pages: info.pages, status: info.status, error: info.error }
+                : a,
+            ),
+          ),
+        )
+        .catch((e) => {
+          setAttachments((prev) => prev.filter((a) => a.localId !== localId));
+          setError(e.message);
+        });
     }
   };
+  const uploading = attachments.some((a) => a.uploading);
 
   const submit = () => {
-    if (running || disabled) return;
-    if (!text.trim() && !attachments.length) return;
-    onSend(text.trim(), attachments);
+    if (running || disabled || uploading) return;
+    const ready = attachments.filter((a) => a.status !== "error");
+    if (!text.trim() && !ready.length) return;
+    onSend(text.trim(), ready);
     setText("");
     setAttachments([]);
     setError(null);
@@ -109,9 +119,10 @@ export function Composer({
       {attachments.length > 0 && (
         <div className="composer-attachments">
           {attachments.map((a, i) => (
-            <span key={i} className="file-chip removable">
-              {a.kind === "image" ? <ImageIcon size={13} /> : <FileText size={13} />}
-              {a.name}
+            <span key={a.localId ?? i} className={`file-chip removable${a.status === "error" ? " error" : ""}`} title={a.error ?? undefined}>
+              {a.uploading ? <Loader2 size={13} className="spin" /> : a.fileKind === "image" ? <ImageIcon size={13} /> : <FileText size={13} />}
+              <span className="chip-name">{a.name}</span>
+              <span className="chip-info">{chipInfo(a)}</span>
               <button onClick={() => setAttachments(attachments.filter((_, j) => j !== i))} title="Entfernen">
                 <X size={12} />
               </button>
@@ -149,7 +160,7 @@ export function Composer({
           multiple
           hidden
           onChange={(e) => {
-            if (e.target.files) addFiles(e.target.files);
+            if (e.target.files) addFiles(Array.from(e.target.files));
             e.target.value = "";
           }}
         />
@@ -182,7 +193,7 @@ export function Composer({
           <button
             className="send-btn"
             onClick={submit}
-            disabled={disabled || (!text.trim() && !attachments.length)}
+            disabled={disabled || uploading || (!text.trim() && !attachments.length)}
             title="Senden (Enter)"
           >
             <ArrowUp size={18} />

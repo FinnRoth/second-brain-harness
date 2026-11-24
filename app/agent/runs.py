@@ -285,26 +285,35 @@ def assistant_history(m: dict[str, Any], max_result_chars: int = 1500) -> list[d
     return out
 
 
-def to_llm_message(m: dict[str, Any]) -> dict[str, Any] | None:
-    """Gespeicherte Nutzer-Nachricht → OpenAI-Nachricht (inkl. Anhängen)."""
+def to_llm_message(m: dict[str, Any], file_parts: Any = None) -> dict[str, Any] | None:
+    """Gespeicherte Nutzer-Nachricht → OpenAI-Nachricht (inkl. Anhängen).
+
+    file_parts(file_id) liefert die Content-Parts eines hochgeladenen Dokuments (Text, Seitenbilder …)."""
     if m["role"] == "assistant":
         msgs = assistant_history(m)
         return msgs[-1] if msgs else None
     if m["role"] != "user":
         return None
     text = m.get("content") or ""
-    files = [p for p in m.get("parts") or [] if p.get("type") == "file"]
-    images = [p for p in m.get("parts") or [] if p.get("type") == "image"]
-    if files:
-        blocks = [f'<datei name="{f.get("name", "datei")}">\n{f.get("text", "")}\n</datei>' for f in files]
+    parts = m.get("parts") or []
+    legacy_files = [p for p in parts if p.get("type") == "file" and not p.get("file_id")]
+    images = [p for p in parts if p.get("type") == "image"]
+    uploaded = [p for p in parts if p.get("type") == "file" and p.get("file_id")]
+    if legacy_files:
+        blocks = [f'<datei name="{f.get("name", "datei")}">\n{f.get("text", "")}\n</datei>' for f in legacy_files]
         text = (text + "\n\n" + "\n\n".join(blocks)).strip()
-    if images:
-        return {
-            "role": "user",
-            "content": [{"type": "text", "text": text or "(Bild)"}]
-            + [{"type": "image_url", "image_url": {"url": i["url"]}} for i in images],
-        }
-    return {"role": "user", "content": text}
+    extra: list[dict[str, Any]] = []
+    if uploaded and file_parts:
+        for f in uploaded:
+            extra.extend(file_parts(f["file_id"]))
+    extra += [{"type": "image_url", "image_url": {"url": i["url"]}} for i in images]
+    if not extra:
+        return {"role": "user", "content": text}
+    if all(p.get("type") == "text" for p in extra):  # nur Text → ein String
+        return {"role": "user", "content": "\n\n".join([text, *(p["text"] for p in extra)]).strip()}
+    # Reihenfolge bleibt erhalten, damit Bildbeschriftungen direkt vor ihrem Bild stehen
+    content: list[dict[str, Any]] = [{"type": "text", "text": text or "(Anhang)"}, *extra]
+    return {"role": "user", "content": content}
 
 
 # ---------------------------------------------------------------------------- Runs
@@ -359,6 +368,19 @@ class RunManager:
         self.runs: dict[str, Run] = {}
         self.by_chat: dict[str, str] = {}
         self.approvals: dict[str, Run] = {}
+
+    def _file_parts(self, file_id: str) -> list[dict[str, Any]]:
+        from ..documents import llm_parts_for_file
+
+        st = self.s.settings
+        return llm_parts_for_file(
+            self.s.documents,
+            file_id,
+            inline_tokens=st.doc_inline_tokens,
+            vision=st.doc_vision,
+            max_page_images=st.doc_max_page_images,
+            pdf_native=st.pdf_native,
+        )
 
     def active(self, chat_id: str) -> Run | None:
         rid = self.by_chat.get(chat_id)
@@ -442,7 +464,7 @@ class RunManager:
         for m in repo.messages(run.chat_id):
             if m["role"] == "assistant" and detailed:
                 history.extend(assistant_history(m, self.s.settings.history_tool_result_chars))
-            elif (msg := to_llm_message(m)) is not None:
+            elif (msg := to_llm_message(m, self._file_parts)) is not None:
                 history.append(msg)
         builder = PartsBuilder()
         status, usage = "done", None

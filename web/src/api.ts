@@ -1,4 +1,4 @@
-import type { AppConfig, Attachment, ChatDetail, ChatSummary, RunEvent } from "./types";
+import type { AppConfig, Attachment, ChatDetail, ChatSummary, FileInfo, RunEvent } from "./types";
 
 const KEY = "sb.apiKey";
 
@@ -46,6 +46,31 @@ export async function request<T = any>(method: string, path: string, body?: unkn
     throw new Error(detail || `HTTP ${res.status}`);
   }
   return (res.status === 204 ? undefined : await res.json()) as T;
+}
+
+export async function uploadFile(file: File, chatId?: string | null): Promise<FileInfo> {
+  const form = new FormData();
+  form.append("file", file, file.name || "datei");
+  if (chatId) form.append("chat_id", chatId);
+  const res = await fetch("/api/files", { method: "POST", headers: headers(false), body: form });
+  if (res.status === 401) throw new AuthError("API-Key fehlt oder ist falsch");
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = (await res.json()).detail ?? detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`${file.name}: ${detail}`);
+  }
+  return res.json();
+}
+
+/** Lädt eine geschützte Datei (mit API-Key) und liefert eine Blob-URL. */
+export async function blobUrl(path: string): Promise<string> {
+  const res = await fetch(path, { headers: headers(false) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return URL.createObjectURL(await res.blob());
 }
 
 export const api = {

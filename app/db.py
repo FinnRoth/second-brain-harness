@@ -220,6 +220,25 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX idx_usage_created ON usage_log(created_at);
     """,
+    # --- v6: hochgeladene Dateien ---------------------------------------------------
+    """
+    CREATE TABLE files (
+        id           TEXT PRIMARY KEY,
+        chat_id      TEXT,
+        name         TEXT NOT NULL,
+        mime         TEXT,
+        kind         TEXT NOT NULL,
+        size         INTEGER NOT NULL DEFAULT 0,
+        pages        INTEGER,
+        chars        INTEGER,
+        visual_pages TEXT NOT NULL DEFAULT '[]',
+        meta         TEXT NOT NULL DEFAULT '{}',
+        status       TEXT NOT NULL DEFAULT 'processing',
+        error        TEXT,
+        created_at   TEXT NOT NULL
+    );
+    CREATE INDEX idx_files_chat ON files(chat_id);
+    """,
 ]
 
 

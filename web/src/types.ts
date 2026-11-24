@@ -26,7 +26,7 @@ export type Part =
   | { type: "reasoning"; text: string }
   | { type: "notice"; text: string }
   | { type: "error"; text: string }
-  | { type: "file"; name: string; text?: string; chars?: number }
+  | { type: "file"; name: string; text?: string; chars?: number; file_id?: string; kind?: string; pages?: number | null; status?: string }
   | { type: "image"; name: string; url: string }
   | ToolPart;
 
@@ -92,7 +92,29 @@ export interface RunEvent {
 
 export interface Attachment {
   name: string;
-  kind: "text" | "image";
+  kind: "text" | "image" | "file";
   text?: string;
   url?: string;
+  file_id?: string;
+  // nur im Eingabefeld
+  localId?: string;
+  uploading?: boolean;
+  fileKind?: string;
+  pages?: number | null;
+  status?: string;
+  error?: string | null;
+}
+
+export interface FileInfo {
+  id: string;
+  name: string;
+  mime: string;
+  kind: string;
+  size: number;
+  pages: number | null;
+  chars: number | null;
+  tokens: number;
+  visual_pages: number[];
+  status: string;
+  error: string | null;
 }

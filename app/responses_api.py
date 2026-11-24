@@ -45,6 +45,9 @@ def _content_parts(content: Any) -> Any:
             url = p.get("image_url")
             url = url.get("url") if isinstance(url, dict) else url
             parts.append({"type": "input_image", "image_url": url})
+        elif t == "file":
+            f = p.get("file") or {}
+            parts.append({"type": "input_file", "filename": f.get("filename", "datei.pdf"), "file_data": f.get("file_data")})
         elif t in ("input_text", "input_image", "input_file"):
             parts.append(p)
     return parts

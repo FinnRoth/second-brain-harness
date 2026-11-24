@@ -2,6 +2,7 @@ import { AlertTriangle, Check, ChevronRight, Copy, FileText, Lightbulb, Pencil, 
 import { useEffect, useState } from "react";
 import { fmtCost, fmtTokens } from "../format";
 import type { Message, Part, ToolPart, Usage } from "../types";
+import { DocumentViewer, useBlobUrl } from "./DocumentViewer";
 import { Markdown } from "./Markdown";
 import { ToolGroup } from "./ToolCard";
 
@@ -43,6 +44,15 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+function FileImage({ fileId, name, onOpen }: { fileId: string; name: string; onOpen: () => void }) {
+  const url = useBlobUrl(`/api/files/${fileId}/original`);
+  return (
+    <button className="thumb-btn" onClick={onOpen} title={name}>
+      {url ? <img src={url} alt={name} className="thumb" /> : <span className="thumb placeholder" />}
+    </button>
+  );
+}
+
 export function UserMessage({
   message,
   onEdit,
@@ -54,6 +64,7 @@ export function UserMessage({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
+  const [viewing, setViewing] = useState<string | null>(null);
   const files = message.parts.filter((p) => p.type === "file") as Extract<Part, { type: "file" }>[];
   const images = message.parts.filter((p) => p.type === "image") as Extract<Part, { type: "image" }>[];
 
@@ -102,15 +113,25 @@ export function UserMessage({
             {images.map((img, i) => (
               <img key={i} src={img.url} alt={img.name} className="thumb" />
             ))}
-            {files.map((f, i) => (
-              <span key={i} className="file-chip">
-                <FileText size={13} /> {f.name}
-              </span>
-            ))}
+            {files.map((f, i) =>
+              f.file_id && f.kind === "image" ? (
+                <FileImage key={i} fileId={f.file_id} name={f.name} onOpen={() => setViewing(f.file_id!)} />
+              ) : f.file_id ? (
+                <button key={i} className="file-chip clickable" onClick={() => setViewing(f.file_id!)} title="Ansehen, was der Assistent gelesen hat">
+                  <FileText size={13} /> {f.name}
+                  {f.pages ? <span className="chip-info">{f.pages} {f.kind === "pptx" ? "Folien" : f.kind === "xlsx" ? "Blätter" : "S."}</span> : null}
+                </button>
+              ) : (
+                <span key={i} className="file-chip">
+                  <FileText size={13} /> {f.name}
+                </span>
+              ),
+            )}
           </div>
         )}
         {message.content && <div className="user-text">{message.content}</div>}
       </div>
+      {viewing && <DocumentViewer fileId={viewing} onClose={() => setViewing(null)} />}
       <div className="msg-actions">
         <CopyButton text={message.content} />
         {!disabled && (

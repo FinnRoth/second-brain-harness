@@ -237,7 +237,7 @@ export function ChatView({
           ...attachments.map((a) =>
             a.kind === "image"
               ? { type: "image" as const, name: a.name, url: a.url! }
-              : { type: "file" as const, name: a.name },
+              : { type: "file" as const, name: a.name, file_id: a.file_id, kind: a.fileKind, pages: a.pages ?? null },
           ),
         ],
         status: "done",
@@ -250,7 +250,7 @@ export function ChatView({
       stick.current = true;
       const { run_id } = await api.send(id!, {
         content: text,
-        attachments,
+        attachments: attachments.map(({ name, kind, text, url, file_id }) => ({ name, kind, text, url, file_id })),
         model: settings.model,
         permission_mode: settings.mode,
         reasoning_effort: settings.effort || null,
@@ -407,11 +407,13 @@ export function ChatView({
                     send(
                       text,
                       m.parts
-                        .filter((p) => p.type === "image" || (p.type === "file" && p.text))
+                        .filter((p) => p.type === "image" || (p.type === "file" && (p.text || p.file_id)))
                         .map((p: any) =>
                           p.type === "image"
                             ? { name: p.name, kind: "image" as const, url: p.url }
-                            : { name: p.name, kind: "text" as const, text: p.text },
+                            : p.file_id
+                              ? { name: p.name, kind: "file" as const, file_id: p.file_id }
+                              : { name: p.name, kind: "text" as const, text: p.text },
                         ),
                       m.id,
                     )
